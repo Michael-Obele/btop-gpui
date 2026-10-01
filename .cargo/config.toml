@@ -1,0 +1,4 @@
+# AGENTS.md §2: cap cargo parallelism on this 4c/8t 15W laptop.
+# 4 jobs keeps wall-clock close to 8 while leaving the machine usable.
+[build]
+jobs = 4
