@@ -414,7 +414,13 @@ impl AppView {
     /// and visible controls, because a mouse user cannot discover a key map.
     fn title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, foreground, accent) = (theme.muted_foreground, theme.foreground, theme.accent);
+        // The icon gets a real stroke colour, not `accent`: that is a surface
+        // token, and using it as ink gives near-black on the dark theme.
+        let (muted, foreground, brand) = (
+            theme.muted_foreground,
+            theme.foreground,
+            theme::stroke(cx, 0),
+        );
         TitleBar::new().child(
             h_flex()
                 .w_full()
@@ -433,7 +439,7 @@ impl AppView {
                             div()
                                 .flex_none()
                                 .size_4()
-                                .text_color(accent)
+                                .text_color(brand)
                                 .child(Icon::new(IconName::Activity)),
                         )
                         .child(

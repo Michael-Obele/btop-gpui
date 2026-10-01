@@ -17,6 +17,7 @@ use crate::history::History;
 use crate::model::{CPU_FIELD_NAMES, ProcSnapshot, Snapshot};
 use crate::ui::chart;
 use crate::ui::chrome::{meter, panel_body};
+use crate::ui::theme;
 
 /// Renders `—` when there is no snapshot yet.
 fn no_data(cx: &App) -> Div {
@@ -67,7 +68,7 @@ pub fn cpu_panel(snapshot: Option<&Snapshot>, history: &History, tick_secs: f32,
         .child(div().h(px(110.)).child(chart::percent_chart(
             "cpu-total",
             &history.cpu_total,
-            theme.accent,
+            theme::stroke(cx, 0),
             "cpu",
             tick_secs,
         )))
@@ -122,18 +123,18 @@ fn field_legend_row(cx: &App) -> impl IntoElement {
 
 /// The colour per CPU field, in `CPU_FIELD_NAMES` order, taken from the theme
 /// so a theme change restyles the graphs with no code edit.
+///
+/// The theme's five chart slots are all shades of **one** blue, which is not
+/// enough to tell seven overlapping series apart, so it is topped up with the
+/// two market colours and `info` — the only other distinct hues the theme
+/// offers.
 fn field_colors(cx: &App) -> Vec<gpui_kit::Hsla> {
     let t = cx.theme();
-    vec![
-        t.chart_1,
-        t.chart_2,
-        t.chart_3,
-        t.chart_4,
-        t.chart_5,
-        t.chart_bullish,
-        t.chart_bearish,
-        t.info,
-    ]
+    let mut colors = theme::series_colors(cx);
+    colors.push(t.chart_bullish);
+    colors.push(t.chart_bearish);
+    colors.push(t.info);
+    colors
 }
 
 pub fn mem_panel(
@@ -166,7 +167,7 @@ pub fn mem_panel(
         .child(div().h(px(80.)).child(chart::percent_chart(
             "mem-used",
             &history.mem_used,
-            theme.chart_2,
+            theme::stroke(cx, 1),
             "used",
             tick_secs,
         )))
@@ -278,8 +279,8 @@ pub fn net_panel(
             "net-rw",
             d,
             u,
-            theme.chart_1,
-            theme.chart_2,
+            theme::stroke(cx, 0),
+            theme::stroke(cx, 2),
             chart::SeriesSpec {
                 names: ("download", "upload"),
                 unit: " B/s",
@@ -354,8 +355,8 @@ pub fn disk_panel(
             "disk-rw",
             r,
             w,
-            theme.chart_3,
-            theme.chart_4,
+            theme::stroke(cx, 1),
+            theme::stroke(cx, 3),
             chart::SeriesSpec {
                 names: ("read", "write"),
                 unit: " B/s",
@@ -507,12 +508,19 @@ fn sort_button(
 ) -> impl IntoElement {
     let theme = cx.theme();
     let active = wanted == sort;
-    let fg = if active {
-        theme.accent
+    // The active pill is **filled**, not just outlined.
+    //
+    // `accent` is the theme's hover/selected *surface* token and
+    // `accent_foreground` is its matching text colour — the crate documents them
+    // as a pair. Using `accent` itself as the text colour, as this first did,
+    // gives near-black text on the dark theme and near-white on the light one:
+    // unreadable in one mode whichever way the theme is set.
+    let (fg, border) = if active {
+        (theme.accent_foreground, theme.accent)
     } else {
-        theme.muted_foreground
+        (theme.muted_foreground, theme.border)
     };
-    let border = if active { theme.accent } else { theme.border };
+    let fill = theme.accent;
 
     div()
         .id(ElementId::Name(SharedString::from(format!("sort-{label}"))))
@@ -522,6 +530,7 @@ fn sort_button(
         .rounded_md()
         .border_1()
         .border_color(border)
+        .when(active, move |el| el.bg(fill))
         .cursor_pointer()
         .text_xs()
         .text_color(fg)

@@ -135,7 +135,9 @@ impl Preset {
 /// why it is passed in rather than being derived from the value.
 pub fn meter(label: String, value: f32, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
-    let (muted, accent) = (theme.muted_foreground, theme.accent);
+    // A real stroke colour: the `progress_bar` token defaults to near-black in
+    // the light theme, and `accent` is a surface rather than ink.
+    let (muted, bar) = (theme.muted_foreground, crate::ui::theme::stroke(cx, 1));
     let id = format!("meter-{label}");
     h_flex()
         .items_center()
@@ -148,7 +150,7 @@ pub fn meter(label: String, value: f32, cx: &App) -> impl IntoElement {
                 // `progress_bar` token, which renders near-black in the light
                 // theme — a black bar across a white panel. `accent` is legible
                 // in both, and it matches the charts sitting beside it.
-                .color(accent)
+                .color(bar)
                 .flex_1(),
         )
 }

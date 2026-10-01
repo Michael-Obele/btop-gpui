@@ -333,7 +333,12 @@ pub fn help(cx: &App) -> impl IntoElement {
                         h_flex()
                             .gap_3()
                             .text_xs()
-                            .child(div().w(px(80.)).text_color(theme.accent).child(key))
+                            .child(
+                                div()
+                                    .w(px(80.))
+                                    .text_color(crate::ui::theme::stroke(cx, 0))
+                                    .child(key),
+                            )
                             .child(div().text_color(theme.foreground).child(what))
                     }),
             )

@@ -340,6 +340,20 @@ window, cx)` switches globally. **Never hard-code a colour or a radius** —
 - **`Progress` colours itself from the theme's `progress_bar` token**, which is
   near-black in the light theme; pass `.color(..)` explicitly. `cx.reduce_motion()`
   exists if motion ever needs respecting.
+- **`Theme::accent` is a *surface*, not ink.** The crate's own doc comment says
+  "Used for accents such as hover background on MenuItem, ListItem"; its matching
+  text colour is `accent_foreground`. Used as a text colour, `accent` is
+  `neutral-800` (#262626) on the dark theme and `neutral-100` (near-white) on the
+  light one — so it is invisible in one mode whichever theme is set. This shipped
+  once as a selected sort pill with near-black text on a near-black panel.
+  `primary`, `secondary`, `danger` and `info` have the same shape: each is a
+  background with a `_foreground` partner for the text that sits on it.
+- **The theme's `chart.1..5` are the same values in both modes** — a pale blue
+  (#93c5fd) through to a navy (#1e40af). A graph drawn straight from them is
+  unreadable in one theme whichever end it is handed: the pale end vanishes on
+  white, the navy end on near-black. Use `ui::theme::stroke(cx, i)`, which
+  reverses the ramp in light mode so every stroke sits on the legible half, and
+  references no literal colour while doing it.
 
 ---
 

@@ -5,6 +5,7 @@
 //! colour.** Every colour comes from `cx.theme()`, so changing the theme
 //! restyles every panel at once and there is nothing to hunt down.
 
+use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::theme::{Theme, ThemeMode};
 
 use crate::config::Config;
@@ -182,6 +183,40 @@ fn validate_palette(cfg: &Config) {
     {
         logger::once("theme-unreadable", "colour theme file had no usable keys");
     }
+}
+
+/// The graph stroke palette, ordered most-legible-first for the current mode.
+///
+/// The theme's `chart.1..5` hold the **same values in both modes**: a pale blue
+/// (#93c5fd) through to a navy (#1e40af). Taken as they come, a pale stroke
+/// disappears on white and a navy stroke disappears on near-black — so a graph
+/// drawn straight from them is unreadable in one theme whichever end it is
+/// handed. Reversing the ramp in light mode puts every stroke on the legible
+/// half, without naming a single literal colour.
+pub fn series_colors(cx: &gpui_kit::App) -> Vec<gpui_kit::Hsla> {
+    let theme = cx.theme();
+    let mut ramp = vec![
+        theme.chart_1,
+        theme.chart_2,
+        theme.chart_3,
+        theme.chart_4,
+        theme.chart_5,
+    ];
+    if !theme.is_dark() {
+        ramp.reverse();
+    }
+    ramp
+}
+
+/// One graph stroke that reads against the current background.
+///
+/// `index` walks the ramp, so panels can still be told apart by colour.
+/// Falls back to `foreground`, which is always legible, if the theme is short.
+pub fn stroke(cx: &gpui_kit::App, index: usize) -> gpui_kit::Hsla {
+    let ramp = series_colors(cx);
+    ramp.get(index % ramp.len().max(1))
+        .copied()
+        .unwrap_or_else(|| cx.theme().foreground)
 }
 
 /// btop's `temp_scale` option, resolved for `format.rs`.
