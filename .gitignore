@@ -1,0 +1,31 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+*.profraw
+
+# Build artefacts
+/dist
+/release
+*.AppImage
+*.deb
+*.rpm
+
+# Editor
+.vscode/*
+!.vscode/settings.json
+.idea/
+*.swp
+.DS_Store
+
+# ---- Research scratch ----
+# btop's source, downloaded for reference while writing the plan. Useful to the
+# implementing agent (03-data-layer.md cites line numbers into it), so keep it
+# on disk — just don't commit 10k lines of C++.
+/btop-src/
+/btop.tar.gz
+
+# ---- Plan documents ----
+# The plan in docs/ is working material, not source. Kept local on purpose.
+# Remove this block if you ever want to commit the plan.
+/docs/
