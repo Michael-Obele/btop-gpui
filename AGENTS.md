@@ -308,7 +308,7 @@ window, cx)` switches globally. **Never hard-code a colour or a radius** —
   `IconNamed`, so `Icon::new(gpui_kit::assets::IconName::Activity)` works.
 - **`window_border()` lives at `gpui_kit::component::window_border`**, not at the
   crate root.
-- **A `TitleBar` must be *rendered*, not just configured.** `TitleBar::window_options()`
+- **A `TitleBar` must be _rendered_, not just configured.** `TitleBar::window_options()`
   reserves the 34px strip and lets the compositor drag by it, but nothing is
   painted there unless `TitleBar::new().child(..)` is in the element tree. It
   implements `ParentElement`.

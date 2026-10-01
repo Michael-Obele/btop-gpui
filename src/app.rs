@@ -34,7 +34,9 @@ use std::time::{Duration, Instant};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme, Icon, TitleBar, h_flex, v_flex, window_border};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, ElementId, FocusHandle, Render, ScrollHandle, SharedString, Window, div};
+use gpui_kit::{
+    Context, Div, ElementId, FocusHandle, Render, ScrollHandle, SharedString, Window, div,
+};
 
 use crate::collect::proc::ProcSort;
 use crate::collect::{self, Shared};
@@ -92,6 +94,10 @@ pub struct AppView {
     /// Scroll position of the process list. Owned here because the list has to
     /// stay clipped and scrollable, not grow to its content height.
     proc_scroll: ScrollHandle,
+    /// How long between collector ticks. Held as state rather than captured when
+    /// the loop starts, so changing it in the options dialog takes effect on the
+    /// next tick instead of needing a new loop.
+    tick_interval: Duration,
     /// Graph columns to keep: `width * 2`, matching btop's
     /// two-samples-per-rendered-column rule.
     cols: usize,
@@ -115,6 +121,7 @@ impl AppView {
             theme_choice: ThemeChoice::parse(&config.str("theme_mode")),
             net_iface: configured_iface(&config),
             proc_scroll: ScrollHandle::new(),
+            tick_interval: Duration::from_secs(2),
             cols: 120,
             last_seen: 0,
             focus_handle: cx.focus_handle(),
@@ -124,16 +131,26 @@ impl AppView {
             shared,
             config,
         };
-        // Read the interval before the borrow of `self` in the call.
-        let interval = view.config.update_interval();
-        view.start_tick_loop(interval, cx);
+        view.tick_interval = view.config.update_interval();
+        view.start_tick_loop(cx);
         view
     }
 
-    /// Start the per-tick timer loop. Detached: it runs for the life of the app.
-    fn start_tick_loop(&mut self, interval: Duration, cx: &mut Context<Self>) {
+    /// Start the per-tick timer loop. Detached: it runs for the life of the app,
+    /// and there is exactly **one** of it.
+    ///
+    /// The interval is re-read from the view on every iteration rather than
+    /// captured. The previous version passed it in as a parameter and
+    /// `apply_config` started a *second* loop — `.detach()` meant the old one
+    /// kept running, so every settings change added another loop, each one
+    /// pulling the snapshot and notifying.
+    fn start_tick_loop(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
+                let interval = match this.update(cx, |this, _| this.tick_interval) {
+                    Ok(interval) => interval,
+                    Err(_) => break,
+                };
                 cx.background_executor().timer(interval).await;
                 // `update` returns Err once the view is gone, which is how this
                 // loop terminates rather than spinning forever.
@@ -187,19 +204,19 @@ impl AppView {
         self.snapshot = Some(snapshot);
     }
 
-    /// Apply a new config. The collector picks up its half on the next tick;
-    /// the UI half applies immediately.
-    fn apply_config(&mut self, cfg: Config, cx: &mut Context<Self>) {
+    /// Apply a config that has already been mutated in memory.
+    ///
+    /// The collector picks up its half on the next tick, and the running tick
+    /// loop re-reads `tick_interval` each iteration — so this needs no `Context`
+    /// and, crucially, starts no second loop.
+    fn apply_config(&mut self, cfg: Config) {
         self.proc_sort = collect::proc::ProcSort::from_config(&cfg.str("proc_sorting"));
         self.proc_tree = cfg.bool("proc_tree");
         self.filter = collect::proc::compile_filter(&cfg.str("proc_filter"));
         self.net_iface = configured_iface(&cfg);
-        let interval = cfg.update_interval();
+        self.tick_interval = cfg.update_interval();
         self.config = cfg.clone();
         self.shared.push_config(cfg);
-        // Restart the loop so a new cadence takes effect now rather than after
-        // the old interval elapses once more.
-        self.start_tick_loop(interval, cx);
     }
 
     /// Which interface the net panel shows, honouring `net_iface`.
@@ -335,9 +352,7 @@ impl Render for AppView {
         let overlay: gpui_kit::AnyElement = match &self.dialog {
             Dialog::None => div().into_any_element(),
             Dialog::Help => dialogs::help(cx).into_any_element(),
-            Dialog::Options => {
-                dialogs::message("Options live in the config file", cx).into_any_element()
-            }
+            Dialog::Options => self.options_dialog(cx).into_any_element(),
             Dialog::ConfirmKill(pid, signal) => {
                 dialogs::confirm_kill(*pid, signal, cx).into_any_element()
             }
@@ -587,7 +602,7 @@ impl AppView {
     // ---- imperative API used by tests and the options dialog ----
 
     pub fn reload_config(&mut self, cfg: Config, cx: &mut Context<Self>) {
-        self.apply_config(cfg, cx);
+        self.apply_config(cfg);
         cx.notify();
     }
 
@@ -628,6 +643,10 @@ impl AppView {
                 column,
                 ProcSort::Memory | ProcSort::CpuDirect | ProcSort::CpuLazy
             );
+            // The column is a config value and outlives the window; the
+            // direction is view state and deliberately does not.
+            self.config.set("proc_sorting", self.proc_sort.label());
+            self.persist_or_log();
         }
         cx.notify();
     }
@@ -679,6 +698,171 @@ impl AppView {
             Err(text) => text,
         });
         cx.notify();
+    }
+
+    /// Write the config back to disk, logging once if it fails.
+    ///
+    /// A failed save is not worth interrupting the user for — the change has
+    /// already been applied in memory.
+    fn persist_or_log(&self) {
+        if self.config.save(&crate::config::config_path()).is_err() {
+            crate::logger::once("config-save-failed", "could not save the configuration");
+        }
+    }
+
+    /// Apply a config that has already been mutated in memory.
+    fn apply_and_persist(&mut self, cx: &mut Context<Self>) {
+        self.persist_or_log();
+        self.apply_config(self.config.clone());
+        cx.notify();
+    }
+
+    /// Flip a boolean option, apply it live, and persist it.
+    fn toggle_option(&mut self, key: &str, cx: &mut Context<Self>) {
+        let next = !self.config.bool(key);
+        self.config.set(key, if next { "True" } else { "False" });
+        self.apply_and_persist(cx);
+    }
+
+    /// Step through btop's update intervals.
+    ///
+    /// Picks the first step *longer* than the current value rather than the
+    /// next array slot, so a hand-edited `update_ms` still moves forward
+    /// instead of snapping back to the start.
+    fn cycle_update_interval(&mut self, cx: &mut Context<Self>) {
+        const STEPS_MS: [u64; 5] = [500, 1_000, 2_000, 5_000, 10_000];
+        let now = self.config.update_interval().as_millis() as u64;
+        let next = STEPS_MS
+            .iter()
+            .copied()
+            .find(|ms| *ms > now)
+            .unwrap_or(STEPS_MS[0]);
+        self.config.set("update_ms", &next.to_string());
+        self.apply_and_persist(cx);
+    }
+
+    /// Advance the sort column, always moving to a different one.
+    fn cycle_sort(&mut self, cx: &mut Context<Self>) {
+        self.sort_by(self.proc_sort.next(), cx);
+    }
+
+    /// Flip the sort direction.
+    fn reverse_sort(&mut self, cx: &mut Context<Self>) {
+        self.proc_reversed = !self.proc_reversed;
+        cx.notify();
+    }
+
+    /// btop's options menu, as a GUI.
+    ///
+    /// Every row applies live and is written back to the config, and every row
+    /// is a click target — the same rule as everywhere else: a keystroke may be
+    /// a shortcut for a control, never the only way to reach it.
+    fn options_dialog(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme();
+        let (muted, foreground) = (theme.muted_foreground, theme.foreground);
+        let on_off = |on: bool| if on { "on" } else { "off" };
+        let scale_label = if self.config.size_scale() == crate::format::SizeScale::Decimal {
+            "decimal (GB)"
+        } else {
+            "binary (GiB)"
+        };
+
+        let rows = v_flex()
+            .gap_1()
+            .child(dialogs::option_section("General", muted))
+            .child(dialogs::option_row(
+                "theme",
+                self.theme_choice.label(),
+                foreground,
+                cx.listener(|this, _e, _w, cx| this.cycle_theme(cx)),
+            ))
+            .child(dialogs::option_row(
+                "update interval",
+                &format!("{} ms", self.config.update_interval().as_millis()),
+                foreground,
+                cx.listener(|this, _e, _w, cx| this.cycle_update_interval(cx)),
+            ))
+            .child(dialogs::option_row(
+                "size units",
+                scale_label,
+                foreground,
+                cx.listener(|this, _e, _w, cx| {
+                    let next = if this.config.bool("base_10_sizes") {
+                        "False"
+                    } else {
+                        "True"
+                    };
+                    this.config.set("base_10_sizes", next);
+                    this.apply_and_persist(cx);
+                }),
+            ))
+            .child(dialogs::option_row(
+                "battery box",
+                on_off(self.config.bool("show_battery")),
+                foreground,
+                cx.listener(|this, _e, _w, cx| this.toggle_option("show_battery", cx)),
+            ))
+            .child(dialogs::option_row(
+                "disk box",
+                on_off(self.config.bool("show_disks")),
+                foreground,
+                cx.listener(|this, _e, _w, cx| this.toggle_option("show_disks", cx)),
+            ))
+            .child(dialogs::option_section("Processes", muted))
+            .child(dialogs::option_row(
+                "tree view",
+                on_off(self.proc_tree),
+                foreground,
+                cx.listener(|this, _e, _w, cx| {
+                    this.proc_tree = !this.proc_tree;
+                    this.config
+                        .set("proc_tree", if this.proc_tree { "True" } else { "False" });
+                    this.apply_and_persist(cx);
+                }),
+            ))
+            .child(dialogs::option_row(
+                "per-core cpu",
+                on_off(self.config.bool("proc_per_core")),
+                foreground,
+                cx.listener(|this, _e, _w, cx| this.toggle_option("proc_per_core", cx)),
+            ))
+            .child(dialogs::option_row(
+                "sort column",
+                self.proc_sort.label(),
+                foreground,
+                cx.listener(|this, _e, _w, cx| this.cycle_sort(cx)),
+            ))
+            .child(dialogs::option_row(
+                "sort direction",
+                if self.proc_reversed {
+                    "ascending"
+                } else {
+                    "descending"
+                },
+                foreground,
+                cx.listener(|this, _e, _w, cx| this.reverse_sort(cx)),
+            ));
+
+        dialogs::modal(
+            cx,
+            v_flex()
+                .gap_2()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui_kit::FontWeight(500.0))
+                        .text_color(foreground)
+                        .child("Options"),
+                )
+                .child(rows)
+                .child(
+                    div()
+                        .pt_1()
+                        .text_xs()
+                        .text_color(muted)
+                        .child("Esc closes this · everything here is also a key"),
+                ),
+        )
     }
 
     /// Quit. Bound to `q` and to the title-bar button.

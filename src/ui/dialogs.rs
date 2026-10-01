@@ -11,14 +11,69 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme, Icon, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, ClickEvent, Context, ElementId, IntoElement, SharedString, Window, div, px};
+use gpui_kit::{
+    App, ClickEvent, Context, Div, ElementId, IntoElement, SharedString, Window, div, px,
+};
 
 use crate::app::{AppView, Dialog};
 use crate::format::{self, SizeScale};
 use crate::model::ProcSnapshot;
 
+/// A group heading in the options dialog.
+pub fn option_section(title: &'static str, color: gpui_kit::Hsla) -> Div {
+    div()
+        .w_full()
+        .pt_2()
+        .pb_1()
+        .border_b_1()
+        .border_color(color.opacity(0.4))
+        .text_xs()
+        .text_color(color)
+        .child(title)
+}
+
+/// A full-width row in the options dialog: a label, its current value, a click.
+///
+/// The **whole row** is the target, not just the value chip — a 40px-wide target
+/// is a test of mouse precision, not a control.
+///
+/// Takes one colour rather than a `&App`: the caller is building these from a
+/// `&mut Context` that `cx.listener` has just borrowed, and threading the theme
+/// through would only add ways to get that borrow order wrong.
+pub fn option_row(
+    label: &'static str,
+    value: &str,
+    color: gpui_kit::Hsla,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    h_flex()
+        .id(ElementId::Name(SharedString::from(format!("opt-{label}"))))
+        .w_full()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .cursor_pointer()
+        .text_xs()
+        .child(div().text_color(color.opacity(0.62)).child(label))
+        .child(
+            h_flex()
+                .flex_none()
+                .items_center()
+                .gap_1()
+                .text_color(color)
+                // The chevron is the affordance: it says "this cycles" without
+                // needing a hover to discover it.
+                .child(value.to_string())
+                .child("›"),
+        )
+        .on_click(on_click)
+}
+
 /// A modal shell: a centred card over a dimmed backdrop.
-pub fn modal(cx: &App, content: impl IntoElement) -> impl IntoElement {
+pub fn modal(cx: &App, content: impl IntoElement) -> Div {
     let theme = cx.theme();
     v_flex()
         .absolute()
