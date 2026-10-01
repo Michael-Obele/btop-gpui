@@ -50,9 +50,9 @@ driver.
 
 ### Optional capabilities
 
-| Feature | Requirement | Command |
-| --- | --- | --- |
-| CPU wattage (`energy_uj`) | `cap_perfmon` | `sudo setcap cap_perfmon=+ep ./target/release/btop-gpui` |
+| Feature                                          | Requirement                               | Command                                                                      |
+| ------------------------------------------------ | ----------------------------------------- | ---------------------------------------------------------------------------- |
+| CPU wattage (`energy_uj`)                        | `cap_perfmon`                             | `sudo setcap cap_perfmon=+ep ./target/release/btop-gpui`                     |
 | `kill` / `setpriority` on other users' processes | usually fine; helps on some `/proc` reads | `sudo setcap cap_perfmon,cap_dac_read_search=+ep ./target/release/btop-gpui` |
 
 Never ship SUID. Without caps the app still works: watts hide, `/proc/<pid>/io`
@@ -86,12 +86,12 @@ jobs = 4
 
 Then pick the cheapest command that proves the change:
 
-| Instead of | Run | Why |
-| --- | --- | --- |
-| `cargo build` | `cargo check` | Type-checks without codegen. Several times cheaper. |
-| `cargo build` (to check tests compile) | `cargo check --all-targets` | Same, plus test/example targets. |
-| `cargo test` | `cargo test --lib` | Avoids building the ~100 MB GPUI binary. |
-| `cargo clippy --all-targets` | `cargo check -j 2` when the machine is already busy | Halves the thermal load. |
+| Instead of                             | Run                                                 | Why                                                 |
+| -------------------------------------- | --------------------------------------------------- | --------------------------------------------------- |
+| `cargo build`                          | `cargo check`                                       | Type-checks without codegen. Several times cheaper. |
+| `cargo build` (to check tests compile) | `cargo check --all-targets`                         | Same, plus test/example targets.                    |
+| `cargo test`                           | `cargo test --lib`                                  | Avoids building the ~100 MB GPUI binary.            |
+| `cargo clippy --all-targets`           | `cargo check -j 2` when the machine is already busy | Halves the thermal load.                            |
 
 Hard rules: **one cargo command at a time** (two contend for the `target/` lock),
 never `cargo clean` without asking (it discards a 6.9 GB warm cache), never edit
@@ -120,18 +120,18 @@ Run these at the end of a task, not in a loop.
 There is no single all-in-one checker in Rust. `bun check` is three tools
 running together; the equivalent is the four commands above.
 
-| `bun` | Rust | Notes |
-| --- | --- | --- |
-| `bun install` | `cargo fetch` | Or let any build do it. |
-| `bun check` | `cargo check --all-targets` | Type-check, no codegen. The closest single equivalent. |
-| `bun run lint` | `cargo clippy --all-targets -- -D warnings` | Lint. `-D warnings` makes warnings fatal, as CI wants. |
-| `bun run format` | `cargo fmt --all` | Rewrites. `--check` to verify without writing. |
-| `bun test` | `cargo test --lib` | `--lib` avoids the binary; drop it to include integration targets. |
-| `bun test <name>` | `cargo test --lib <name>` | Filters by substring. |
-| `bun run build` | `cargo build --release` | Expensive. Ask first. |
-| `bun run dev` | `cargo run` | |
-| `bun run start` | `./target/release/btop-gpui` | |
-| TypeScript `tsc --noEmit` | `cargo check --all-targets` | Rust has no separate type-check phase; it is part of codegen. |
+| `bun`                     | Rust                                        | Notes                                                              |
+| ------------------------- | ------------------------------------------- | ------------------------------------------------------------------ |
+| `bun install`             | `cargo fetch`                               | Or let any build do it.                                            |
+| `bun check`               | `cargo check --all-targets`                 | Type-check, no codegen. The closest single equivalent.             |
+| `bun run lint`            | `cargo clippy --all-targets -- -D warnings` | Lint. `-D warnings` makes warnings fatal, as CI wants.             |
+| `bun run format`          | `cargo fmt --all`                           | Rewrites. `--check` to verify without writing.                     |
+| `bun test`                | `cargo test --lib`                          | `--lib` avoids the binary; drop it to include integration targets. |
+| `bun test <name>`         | `cargo test --lib <name>`                   | Filters by substring.                                              |
+| `bun run build`           | `cargo build --release`                     | Expensive. Ask first.                                              |
+| `bun run dev`             | `cargo run`                                 |                                                                    |
+| `bun run start`           | `./target/release/btop-gpui`                |                                                                    |
+| TypeScript `tsc --noEmit` | `cargo check --all-targets`                 | Rust has no separate type-check phase; it is part of codegen.      |
 
 To make `bun check` work verbatim, add a `.cargo/config.toml` alias:
 
@@ -208,11 +208,11 @@ grep -n "notify()" src/app.rs    # none may sit inside render()
 
 ## Runtime files
 
-| What | Where |
-| --- | --- |
-| Config | `$XDG_CONFIG_HOME/btop-gpui/btop-gpui.conf` (default `~/.config/…`) |
-| Custom themes | `$XDG_DATA_HOME/btop-gpui/themes` (default `~/.local/share/…`) |
-| Log | `$XDG_STATE_HOME/btop-gpui/btop-gpui.log` (default `~/.local/state/…`) |
+| What          | Where                                                                  |
+| ------------- | ---------------------------------------------------------------------- |
+| Config        | `$XDG_CONFIG_HOME/btop-gpui/btop-gpui.conf` (default `~/.config/…`)    |
+| Custom themes | `$XDG_DATA_HOME/btop-gpui/themes` (default `~/.local/share/…`)         |
+| Log           | `$XDG_STATE_HOME/btop-gpui/btop-gpui.log` (default `~/.local/state/…`) |
 
 Delete the config and relaunch: defaults are written back with a comment block.
 Corrupt a value and it falls back to the default, logs once, and starts.
@@ -224,14 +224,14 @@ Useful keys in the config: `update_ms` (tick interval), `base_10_sizes`,
 
 ## Keyboard
 
-| Key | Action |
-| --- | --- |
-| `?` | Toggle help |
-| `Esc` | Dismiss dialog / overlay |
+| Key             | Action                       |
+| --------------- | ---------------------------- |
+| `?`             | Toggle help                  |
+| `Esc`           | Dismiss dialog / overlay     |
 | `p` / `Shift-p` | Next / previous panel preset |
-| `Shift-t` | Toggle process tree |
-| `c` | Cycle sort column |
-| `r` | Reverse sort direction |
+| `Shift-t`       | Toggle process tree          |
+| `c`             | Cycle sort column            |
+| `r`             | Reverse sort direction       |
 
 ---
 
@@ -239,12 +239,12 @@ Useful keys in the config: `update_ms` (tick interval), `base_10_sizes`,
 
 Verified on 2026-10-01 with rustc 1.97.1:
 
-| Command | Result |
-| --- | --- |
-| `cargo test --lib` | **108 passed, 0 failed** |
-| `cargo clippy --all-targets -- -D warnings` | clean |
-| `cargo check --all-targets` | clean |
-| `cargo fmt --all --check` | **fails** — `src/app.rs` import order and a let-chain brace |
+| Command                                     | Result                                                      |
+| ------------------------------------------- | ----------------------------------------------------------- |
+| `cargo test --lib`                          | **108 passed, 0 failed**                                    |
+| `cargo clippy --all-targets -- -D warnings` | clean                                                       |
+| `cargo check --all-targets`                 | clean                                                       |
+| `cargo fmt --all --check`                   | **fails** — `src/app.rs` import order and a let-chain brace |
 
 Not yet built: any `--release` artifact, and the Vulkan/window path is unverified
 on this machine (`vulkaninfo` was not exercised here).

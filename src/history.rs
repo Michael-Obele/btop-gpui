@@ -213,8 +213,7 @@ impl History {
         for net in &snapshot.nets {
             Self::ring_for(&mut self.net_down, &net.name, cols)
                 .push(net.download_bytes_per_sec as f32);
-            Self::ring_for(&mut self.net_up, &net.name, cols)
-                .push(net.upload_bytes_per_sec as f32);
+            Self::ring_for(&mut self.net_up, &net.name, cols).push(net.upload_bytes_per_sec as f32);
         }
         for disk in &snapshot.disks {
             Self::ring_for(&mut self.disk_read, &disk.name, cols)

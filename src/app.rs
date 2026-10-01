@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, App, Context, FocusHandle, Render, Window};
+use gpui_kit::{App, Context, FocusHandle, Render, Window, div, px};
 
 use crate::collect::{self, Shared};
 use crate::config::Config;
@@ -161,9 +161,10 @@ impl AppView {
         // Drop a selection whose process has exited, so a stale row cannot
         // send a signal to a recycled pid.
         if let Some(pid) = self.selected_pid
-            && !self.proc_rows.iter().any(|p| p.pid == pid) {
-                self.selected_pid = None;
-            }
+            && !self.proc_rows.iter().any(|p| p.pid == pid)
+        {
+            self.selected_pid = None;
+        }
 
         self.snapshot = Some(snapshot);
     }
@@ -271,16 +272,21 @@ impl Render for AppView {
         let overlay: gpui_kit::AnyElement = match &self.dialog {
             Dialog::None => div().into_any_element(),
             Dialog::Help => dialogs::help(cx).into_any_element(),
-            Dialog::Options => dialogs::message("Options live in the config file", cx).into_any_element(),
+            Dialog::Options => {
+                dialogs::message("Options live in the config file", cx).into_any_element()
+            }
             Dialog::ConfirmKill(pid, signal) => {
                 dialogs::confirm_kill(*pid, signal, cx).into_any_element()
             }
             Dialog::Message(text) => dialogs::message(text, cx).into_any_element(),
-            Dialog::Detail(pid) => match snap.and_then(|_| self.proc_rows.iter().find(|p| p.pid == *pid))
-            {
-                Some(p) => dialogs::modal(cx, dialogs::process_detail(p, false, cx)).into_any_element(),
-                None => dialogs::message("that process has exited", cx).into_any_element(),
-            },
+            Dialog::Detail(pid) => {
+                match snap.and_then(|_| self.proc_rows.iter().find(|p| p.pid == *pid)) {
+                    Some(p) => {
+                        dialogs::modal(cx, dialogs::process_detail(p, false, cx)).into_any_element()
+                    }
+                    None => dialogs::message("that process has exited", cx).into_any_element(),
+                }
+            }
         };
 
         v_flex()

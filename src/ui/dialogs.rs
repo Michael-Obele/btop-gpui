@@ -10,7 +10,7 @@
 
 use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, App, IntoElement};
+use gpui_kit::{App, IntoElement, div, px};
 
 use crate::format::{self, SizeScale};
 use crate::model::ProcSnapshot;
@@ -89,12 +89,7 @@ fn row(label: &str, value: String, cx: &App) -> impl IntoElement {
                 .text_color(theme.muted_foreground)
                 .child(label.to_string()),
         )
-        .child(
-            div()
-                .flex_1()
-                .text_color(theme.foreground)
-                .child(value),
-        )
+        .child(div().flex_1().text_color(theme.foreground).child(value))
 }
 
 /// The per-process detail sheet.
@@ -142,7 +137,8 @@ pub fn process_detail(p: &ProcSnapshot, show_io: bool, cx: &App) -> impl IntoEle
         ))
         .child(row(
             "written",
-            write.map(|v| format::bytes(v, scale))
+            write
+                .map(|v| format::bytes(v, scale))
                 .unwrap_or_else(|| "—".to_string()),
             cx,
         ))
@@ -163,15 +159,17 @@ pub fn help(cx: &App) -> impl IntoElement {
                     .text_color(theme.foreground)
                     .child("Keyboard"),
             )
-            .children(crate::ui::actions::key_bindings().into_iter().map(
-                |(key, what)| {
-                    h_flex()
-                        .gap_3()
-                        .text_xs()
-                        .child(div().w(px(80.)).text_color(theme.accent).child(key))
-                        .child(div().text_color(theme.foreground).child(what))
-                },
-            ))
+            .children(
+                crate::ui::actions::key_bindings()
+                    .into_iter()
+                    .map(|(key, what)| {
+                        h_flex()
+                            .gap_3()
+                            .text_xs()
+                            .child(div().w(px(80.)).text_color(theme.accent).child(key))
+                            .child(div().text_color(theme.foreground).child(what))
+                    }),
+            )
             .child(
                 div()
                     .text_xs()

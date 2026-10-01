@@ -8,7 +8,7 @@
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{ActiveTheme, TitleBar, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, App, Div, IntoElement, WindowOptions};
+use gpui_kit::{App, Div, IntoElement, WindowOptions, div, px};
 
 use crate::model::Snapshot;
 

@@ -78,12 +78,14 @@ pub fn unescape_mount(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 3 < bytes.len()
-            && let Ok(oct) = u8::from_str_radix(&s[i + 1..i + 4], 8) {
-                out.push(oct as char);
-                i += 4;
-                continue;
-            }
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && let Ok(oct) = u8::from_str_radix(&s[i + 1..i + 4], 8)
+        {
+            out.push(oct as char);
+            i += 4;
+            continue;
+        }
         // Non-ASCII bytes are passed through as latin-1, matching what the
         // kernel's own escaping round-trips to.
         out.push(bytes[i] as char);

@@ -6,7 +6,7 @@
 
 use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, App, Div, IntoElement};
+use gpui_kit::{App, Div, IntoElement, div, px};
 
 use crate::format::{self, SizeScale};
 use crate::history::History;
@@ -61,16 +61,12 @@ pub fn cpu_panel(
             theme.accent,
             width,
         )))
-        .child(div().h(px(70.)).child(chart::cpu_fields_chart(
-            history,
-            &field_colors(cx),
-            width,
-        )))
-        .child(meter(
-            format!("total {total}"),
-            s.cpu.total_percent,
-            cx,
-        ))
+        .child(
+            div()
+                .h(px(70.))
+                .child(chart::cpu_fields_chart(history, &field_colors(cx), width)),
+        )
+        .child(meter(format!("total {total}"), s.cpu.total_percent, cx))
         .child(
             h_flex()
                 .gap_3()
@@ -113,16 +109,11 @@ pub fn mem_panel(
         .child(
             h_flex()
                 .justify_between()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme.foreground)
-                        .child(format!(
-                            "Mem {}/{}",
-                            format::bytes(s.mem.used_bytes, scale),
-                            format::bytes(s.mem.total_bytes, scale)
-                        )),
-                )
+                .child(div().text_sm().text_color(theme.foreground).child(format!(
+                    "Mem {}/{}",
+                    format::bytes(s.mem.used_bytes, scale),
+                    format::bytes(s.mem.total_bytes, scale)
+                )))
                 .child(
                     div()
                         .text_xs()
@@ -286,18 +277,11 @@ pub fn disk_panel(
                                 .text_color(theme.foreground)
                                 .child(format!("{} {}", disk.name, disk.mount_point)),
                         )
-                        .child(
-                            div()
-                                .text_color(theme.muted_foreground)
-                                .child(format!(
-                                    "{}/{}",
-                                    format::bytes(
-                                        disk.total_bytes.saturating_sub(disk.free_bytes),
-                                        scale
-                                    ),
-                                    format::bytes(disk.total_bytes, scale)
-                                )),
-                        ),
+                        .child(div().text_color(theme.muted_foreground).child(format!(
+                            "{}/{}",
+                            format::bytes(disk.total_bytes.saturating_sub(disk.free_bytes), scale),
+                            format::bytes(disk.total_bytes, scale)
+                        ))),
                 )
                 .child(meter(
                     format!(
@@ -316,16 +300,17 @@ pub fn disk_panel(
         && let (Some(r), Some(w)) = (
             history.disk_read.get(&disk.name),
             history.disk_write.get(&disk.name),
-        ) {
-            body = body.child(div().h(px(70.)).child(chart::dual_chart(
-                "disk-rw",
-                r,
-                w,
-                theme.chart_3,
-                theme.chart_4,
-                60,
-            )));
-        }
+        )
+    {
+        body = body.child(div().h(px(70.)).child(chart::dual_chart(
+            "disk-rw",
+            r,
+            w,
+            theme.chart_3,
+            theme.chart_4,
+            60,
+        )));
+    }
     body
 }
 
@@ -439,8 +424,6 @@ pub fn field_legend(index: usize, cx: &App) -> impl IntoElement {
             div()
                 .text_xs()
                 .text_color(theme.muted_foreground)
-                .child(
-                    CPU_FIELD_NAMES[index.min(CPU_FIELD_NAMES.len() - 1)].to_string(),
-                ),
+                .child(CPU_FIELD_NAMES[index.min(CPU_FIELD_NAMES.len() - 1)].to_string()),
         )
 }

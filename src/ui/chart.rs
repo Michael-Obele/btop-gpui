@@ -17,7 +17,7 @@
 
 use gpui_kit::component::chart::{AreaChart, LineChart};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, IntoElement};
+use gpui_kit::{IntoElement, div};
 
 use crate::history::Ring;
 
@@ -153,7 +153,10 @@ pub fn cpu_fields_chart(
     let rows: Vec<FieldRow> = (0..fields[0].len())
         .map(|i| FieldRow {
             label: i.to_string(),
-            values: fields.iter().map(|f| f.get(i).map_or(0.0, |s| s.value)).collect(),
+            values: fields
+                .iter()
+                .map(|f| f.get(i).map_or(0.0, |s| s.value))
+                .collect(),
         })
         .collect();
     fields.clear();

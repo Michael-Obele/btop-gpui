@@ -516,9 +516,10 @@ pub fn parse_cpuinfo_mhz() -> Vec<Option<u32>> {
             continue;
         }
         if let Some((k, v)) = line.split_once(':')
-            && k.trim() == "cpu MHz" {
-                out.push(v.trim().parse::<f32>().ok().map(|f| f.round() as u32));
-            }
+            && k.trim() == "cpu MHz"
+        {
+            out.push(v.trim().parse::<f32>().ok().map(|f| f.round() as u32));
+        }
     }
     out
 }

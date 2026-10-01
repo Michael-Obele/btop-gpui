@@ -116,7 +116,10 @@ pub fn all_keys(text: &str) -> HashMap<String, String> {
             continue;
         };
         if !value.trim().is_empty() {
-            out.insert(format!("{section}.{}", key.trim()), value.trim().to_string());
+            out.insert(
+                format!("{section}.{}", key.trim()),
+                value.trim().to_string(),
+            );
         }
     }
     out

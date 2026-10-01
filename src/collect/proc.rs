@@ -424,9 +424,10 @@ impl ProcCollector {
 
             // `comm` is immutable, so it is read once per PID, ever.
             if !self.names.contains_key(&pid)
-                && let Some(comm) = sysfs::read_str(path.join("comm")) {
-                    self.names.insert(pid, comm);
-                }
+                && let Some(comm) = sysfs::read_str(path.join("comm"))
+            {
+                self.names.insert(pid, comm);
+            }
             let proc_name = self
                 .names
                 .get(&pid)

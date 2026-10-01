@@ -353,23 +353,24 @@ impl DiskCollector {
         self.old_uptime = uptime;
 
         if self.swap_disk
-            && let Some((total, free)) = self.swap {
-                let row = DiskSnapshot {
-                    name: "swap".to_string(),
-                    mount_point: "swap".to_string(),
-                    filesystem: "swap".to_string(),
-                    total_bytes: total,
-                    free_bytes: free,
-                    used_percent: used_percent(total, free),
-                    synthetic: true,
-                    ..Default::default()
-                };
-                // btop puts swap immediately after the root row.
-                match out.iter().position(|d| d.mount_point == "/") {
-                    Some(idx) => out.insert(idx + 1, row),
-                    None => out.push(row),
-                }
+            && let Some((total, free)) = self.swap
+        {
+            let row = DiskSnapshot {
+                name: "swap".to_string(),
+                mount_point: "swap".to_string(),
+                filesystem: "swap".to_string(),
+                total_bytes: total,
+                free_bytes: free,
+                used_percent: used_percent(total, free),
+                synthetic: true,
+                ..Default::default()
+            };
+            // btop puts swap immediately after the root row.
+            match out.iter().position(|d| d.mount_point == "/") {
+                Some(idx) => out.insert(idx + 1, row),
+                None => out.push(row),
             }
+        }
 
         out
     }

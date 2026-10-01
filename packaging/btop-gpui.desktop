@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=btop-gpui
+GenericName=System Monitor
+Comment=A resource monitor like btop, with a graphical interface
+Exec=btop-gpui
+Icon=btop-gpui
+Terminal=false
+Categories=System;Monitor;GTK;
+Keywords=system;monitor;cpu;memory;ram;disk;network;process;
+StartupNotify=true
+# MUST match the app's own id, or the window gets its own launcher entry and
+# the taskbar shows the app twice. GPUI derives the id from this at startup.
+StartupWMClass=btop-gpui
