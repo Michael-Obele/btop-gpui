@@ -55,6 +55,19 @@ pub fn panel(title: &str, body: impl IntoElement, cx: &App) -> Div {
     panel_frame(title, cx).child(panel_body().child(body))
 }
 
+/// A panel that sizes to its content instead of sharing the row's height.
+///
+/// The side column uses this, and it is the fix for the dead space that used to
+/// sit under the CPU charts. With every panel on `flex_1`, all of them grow to
+/// the height of the tallest neighbour — so the shorter boxes pad themselves out
+/// with blank pixels. Sizing to content means the column is exactly as tall as
+/// its boxes and nothing stretches to fill a gap it did not create.
+pub fn panel_auto(title: &str, body: impl IntoElement, cx: &App) -> Div {
+    panel_frame(title, cx)
+        .flex_none()
+        .child(panel_body().child(body))
+}
+
 /// Window options with the gpui-kit title bar wired in.
 pub fn window_options() -> WindowOptions {
     WindowOptions {

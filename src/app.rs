@@ -43,7 +43,7 @@ use crate::collect::{self, Shared};
 use crate::config::Config;
 use crate::history::{History, clamp_columns};
 use crate::model::{ProcSnapshot, Snapshot};
-use crate::ui::chrome::{PRESETS, Preset, panel, status_bar};
+use crate::ui::chrome::{PRESETS, Preset, panel, panel_auto, status_bar};
 use crate::ui::theme::{self, ThemeChoice};
 use crate::ui::{dialogs, panels};
 
@@ -62,6 +62,8 @@ pub enum Dialog {
     Detail(i32),
     /// The right-click menu for a process row.
     ProcessMenu(i32),
+    /// btop's `m` menu: options, help, quit.
+    Menu,
 }
 
 pub struct AppView {
@@ -81,6 +83,20 @@ pub struct AppView {
     proc_reversed: bool,
     proc_tree: bool,
     filter: collect::proc::CompiledFilter,
+    /// The raw filter pattern as typed.
+    ///
+    /// Kept beside the compiled form because a compiled regex cannot be printed
+    /// back out: the filter box has to show what is being typed, and `Esc` has
+    /// to be able to put back the pattern that was in force before the edit.
+    filter_text: String,
+    /// What the filter was when the edit began, so `Esc` can undo it.
+    filter_before_edit: String,
+    /// True while the filter box has the keyboard.
+    ///
+    /// A keyboard mode rather than a text field: btop's filter is a one-line
+    /// incremental search, so every printable key has to reach it — including
+    /// `q`, which would otherwise quit the app mid-word.
+    filter_editing: bool,
     selected_pid: Option<i32>,
     dialog: Dialog,
     /// The theme the user asked for. Kept as the *choice* rather than the
@@ -120,6 +136,9 @@ impl AppView {
             dialog: Dialog::None,
             theme_choice: ThemeChoice::parse(&config.str("theme_mode")),
             net_iface: configured_iface(&config),
+            filter_text: config.str("proc_filter"),
+            filter_before_edit: String::new(),
+            filter_editing: false,
             proc_scroll: ScrollHandle::new(),
             tick_interval: Duration::from_secs(2),
             cols: 120,
@@ -179,6 +198,24 @@ impl AppView {
         history.push_snapshot(&snapshot, cols);
         self.history = history;
 
+        // The snapshot is stored *before* the rows are built, because
+        // `rebuild_rows` reads it and is also called when the filter changes,
+        // between ticks.
+        self.snapshot = Some(snapshot);
+        self.rebuild_rows();
+    }
+
+    /// Rebuild the visible process rows from the current snapshot.
+    ///
+    /// Separate from `pull` so a filter edit can re-run it immediately rather
+    /// than waiting up to `update_ms` for the next snapshot to arrive. Filtering
+    /// on the previous snapshot is correct: a process' name does not change, it
+    /// has only been *listed* a fraction later.
+    fn rebuild_rows(&mut self) {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
+
         // `build_proc_view` takes `&mut [ProcSnapshot]` because tree mode
         // writes the depth and the box-drawing prefix onto each row. Only the
         // rows that survive the filter are cloned out.
@@ -200,8 +237,6 @@ impl AppView {
         {
             self.selected_pid = None;
         }
-
-        self.snapshot = Some(snapshot);
     }
 
     /// Apply a config that has already been mutated in memory.
@@ -213,6 +248,7 @@ impl AppView {
         self.proc_sort = collect::proc::ProcSort::from_config(&cfg.str("proc_sorting"));
         self.proc_tree = cfg.bool("proc_tree");
         self.filter = collect::proc::compile_filter(&cfg.str("proc_filter"));
+        self.filter_text = cfg.str("proc_filter");
         self.net_iface = configured_iface(&cfg);
         self.tick_interval = cfg.update_interval();
         self.config = cfg.clone();
@@ -271,18 +307,22 @@ impl Render for AppView {
         // back a point is instead of being handed a tick index.
         let tick_secs = self.config.update_interval().as_secs_f32();
 
-        // The right-hand column: the narrow boxes, stacked. `v_flex` leaves the
-        // cross axis alone, so these stretch to the column width.
+        // The narrow boxes are split across the two rows so the grid balances.
+        //
+        // Stacking all of them beside the CPU made that column taller than the
+        // CPU box, and `items_stretch` then padded the CPU panel with ~160px of
+        // empty space. Three beside the CPU and one beside the process list puts
+        // the two top columns at a comparable height, so neither has to stretch.
         let mut side = v_flex().flex_none().w_1_3().min_w_0().gap_2();
         if self.shows("mem") {
-            side = side.child(panel(
+            side = side.child(panel_auto(
                 "Memory",
                 panels::mem_panel(snap, &self.history, scale, tick_secs, cx),
                 cx,
             ));
         }
         if self.shows("net") {
-            side = side.child(panel(
+            side = side.child(panel_auto(
                 "Network",
                 panels::net_panel(
                     snap,
@@ -296,24 +336,13 @@ impl Render for AppView {
             ));
         }
         if self.shows("disks") {
-            side = side.child(panel(
+            side = side.child(panel_auto(
                 "Disks",
                 panels::disk_panel(snap, &self.history, scale, tick_secs, cx),
                 cx,
             ));
         }
-        // The battery box exists only when there is a battery, which is the
-        // normal case on a desktop.
-        if snap.and_then(|s| s.battery.as_ref()).is_some() {
-            side = side.child(panel("Battery", panels::battery_panel(snap, cx), cx));
-        }
 
-        // The top row: a wide CPU box beside the narrow stack.
-        //
-        // `items_stretch` is load-bearing. `h_flex()` is `.flex_row()
-        // .items_center()`, so without it every panel is centred on the cross
-        // axis at its own content height and the row floats in the middle of
-        // the window — which is exactly how it used to look.
         let mut top = h_flex().items_stretch().flex_none().w_full().gap_2();
         if self.shows("cpu") {
             top = top.child(panel(
@@ -325,22 +354,36 @@ impl Render for AppView {
         top = top.child(side);
 
         // The process list takes the height that is left over — and only that
-        // much, because its own contents are clipped and scrollable.
-        let mut lower = v_flex().flex_1().min_h_0().w_full();
+        // much, because its own contents are clipped and scrollable. The battery
+        // box sits beside it: it is the one box with no reason to be tall, and
+        // here its height is set by the list rather than by a stack of siblings.
+        let mut lower = h_flex().items_stretch().flex_1().min_h_0().w_full().gap_2();
         if self.shows("proc") {
+            let controls = panels::ProcControls {
+                sort: self.proc_sort,
+                reversed: self.proc_reversed,
+                filter: &self.filter_text,
+                editing: self.filter_editing,
+            };
             lower = lower.child(panel(
                 "Processes",
                 panels::proc_panel(
                     &self.proc_rows,
                     scale,
                     self.selected_pid,
-                    self.proc_sort,
-                    self.proc_reversed,
+                    &controls,
                     &self.proc_scroll,
                     cx,
                 ),
                 cx,
             ));
+        }
+        // The battery box exists only when there is a battery, which is the
+        // normal case on a desktop.
+        if snap.and_then(|s| s.battery.as_ref()).is_some() {
+            lower = lower.child(
+                panel_auto("Battery", panels::battery_panel(snap, cx), cx).w(gpui_kit::px(300.)),
+            );
         }
 
         // The dialog layer sits above the grid and is a no-op when closed.
@@ -353,6 +396,7 @@ impl Render for AppView {
             Dialog::None => div().into_any_element(),
             Dialog::Help => dialogs::help(cx).into_any_element(),
             Dialog::Options => self.options_dialog(cx).into_any_element(),
+            Dialog::Menu => self.main_menu(cx).into_any_element(),
             Dialog::ConfirmKill(pid, signal) => {
                 dialogs::confirm_kill(*pid, signal, cx).into_any_element()
             }
@@ -528,6 +572,14 @@ impl AppView {
         // both reported as "t" here.
         let shift = event.keystroke.modifiers.shift;
 
+        // The filter box, if it is open, gets the keystroke before anything
+        // else — including `q`, which would otherwise quit the app while the
+        // user is halfway through typing a pattern.
+        if self.filter_editing {
+            self.handle_filter_key(event, cx);
+            return;
+        }
+
         // Keys that work whether or not a process is selected.
         //
         // The map follows btop's own wherever it can be checked against
@@ -549,9 +601,18 @@ impl AppView {
                 cx.notify();
                 return;
             }
-            // btop's `m` opens its main menu; ours is the options dialog.
+            // btop's `f` opens the filter; `Delete` clears it.
+            ("f", false) => {
+                self.start_filter(cx);
+                return;
+            }
+            ("delete", _) => {
+                self.clear_filter(cx);
+                return;
+            }
+            // btop's `m` opens its menu. Ours has the same three entries.
             ("m", false) => {
-                self.show_dialog(Dialog::Options, cx);
+                self.show_dialog(Dialog::Menu, cx);
                 return;
             }
             ("q", false) => {
@@ -867,6 +928,112 @@ impl AppView {
                         .text_xs()
                         .text_color(muted)
                         .child("Esc closes this · everything here is also a key"),
+                ),
+        )
+    }
+
+    /// Give the filter box the keyboard, remembering the current pattern.
+    fn start_filter(&mut self, cx: &mut Context<Self>) {
+        self.filter_before_edit = self.filter_text.clone();
+        self.filter_editing = true;
+        // Anything else open would swallow the keystrokes.
+        self.dialog = Dialog::None;
+        cx.notify();
+    }
+
+    /// Clear the filter and re-apply it immediately.
+    fn clear_filter(&mut self, cx: &mut Context<Self>) {
+        if self.filter_text.is_empty() {
+            return;
+        }
+        self.filter_text.clear();
+        self.apply_filter(cx);
+    }
+
+    /// Compile the current pattern, persist it, and rebuild the rows now.
+    ///
+    /// Persisted because a filter the user set deliberately should survive a
+    /// restart, the same as btop's `proc_filter` config value.
+    fn apply_filter(&mut self, cx: &mut Context<Self>) {
+        self.filter = collect::proc::compile_filter(&self.filter_text);
+        self.config.set("proc_filter", &self.filter_text);
+        self.persist_or_log();
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// Route a keystroke to the filter box.
+    fn handle_filter_key(&mut self, event: &gpui_kit::KeyDownEvent, cx: &mut Context<Self>) {
+        match event.keystroke.key.as_str() {
+            "escape" => {
+                // Esc abandons the edit and puts back the pattern that was in
+                // force when typing started, so a half-typed filter is never
+                // left applied.
+                self.filter_text = self.filter_before_edit.clone();
+                self.filter_editing = false;
+                self.apply_filter(cx);
+            }
+            "enter" => {
+                self.filter_editing = false;
+                cx.notify();
+            }
+            "backspace" => {
+                self.filter_text.pop();
+                self.apply_filter(cx);
+            }
+            _ => {
+                // `key_char` is the printable character, when the key produced
+                // one; modifiers and named keys leave it `None`.
+                if let Some(text) = event.keystroke.key_char.as_ref()
+                    && !text.is_empty()
+                {
+                    self.filter_text.push_str(text);
+                    self.apply_filter(cx);
+                }
+            }
+        }
+    }
+
+    /// btop's `m` menu: the three things that are not a panel.
+    fn main_menu(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme();
+        let (muted, foreground) = (theme.muted_foreground, theme.foreground);
+        dialogs::modal(
+            cx,
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .pb_1()
+                        .text_sm()
+                        .font_weight(gpui_kit::FontWeight(500.0))
+                        .text_color(foreground)
+                        .child("btop-gpui"),
+                )
+                .child(dialogs::option_row(
+                    "options",
+                    "m again",
+                    foreground,
+                    cx.listener(|this, _e, _w, cx| this.show_dialog(Dialog::Options, cx)),
+                ))
+                .child(dialogs::option_row(
+                    "help",
+                    "?",
+                    foreground,
+                    cx.listener(|this, _e, _w, cx| this.show_dialog(Dialog::Help, cx)),
+                ))
+                .child(dialogs::option_row(
+                    "quit",
+                    "q",
+                    foreground,
+                    cx.listener(|this, _e, _w, cx| this.quit(cx)),
+                ))
+                .child(
+                    div()
+                        .pt_1()
+                        .text_xs()
+                        .text_color(muted)
+                        .child("Esc closes this"),
                 ),
         )
     }

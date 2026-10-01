@@ -28,6 +28,8 @@ pub fn key_bindings() -> Vec<(&'static str, &'static str)> {
         ("p", "next layout preset"),
         ("Shift-P", "previous layout preset"),
         ("e", "toggle process tree"),
+        ("f", "filter the process list"),
+        ("Del", "clear the filter"),
         ("r", "reverse the sort order"),
         ("Shift-D", "cycle theme: system / dark / light"),
         ("Enter", "show the selected process"),

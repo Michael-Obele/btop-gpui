@@ -88,6 +88,67 @@ pub fn cpu_panel(snapshot: Option<&Snapshot>, history: &History, tick_secs: f32,
                 .child(format!("up {}", format::duration(s.cpu.uptime_seconds)))
                 .child(format!("cores {}", s.cpu.core_count)),
         )
+        .child(per_core_grid(s, cx))
+}
+
+/// One compact cell per logical CPU, laid out in a wrapping row — btop's
+/// per-core breakdown.
+///
+/// Each cell carries the three things a core actually has to say: how busy it
+/// is, how fast it is running, and how hot it is. The speed and temperature are
+/// `Option` because both are absent in a container or a VM, and a missing sensor
+/// has to read as a dash rather than as zero.
+fn per_core_grid(snapshot: &Snapshot, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    // Copied out as `Copy` values so the closure below captures no borrow of
+    // `cx` — a captured borrow is what makes `.children(iter.map(..))` fail to
+    // compile when the caller also holds `cx` mutably.
+    let (muted, foreground) = (theme.muted_foreground, theme.foreground);
+    let fill = theme::stroke(cx, 0);
+
+    h_flex()
+        .flex_wrap()
+        .gap_x_3()
+        .gap_y_2()
+        .children(
+            snapshot
+                .cpu
+                .cores
+                .iter()
+                .enumerate()
+                .map(move |(ix, core)| {
+                    let detail = match (core.mhz, core.temp_c) {
+                        (Some(mhz), Some(temp)) => format!("{mhz} MHz · {temp:.0}°C"),
+                        (Some(mhz), None) => format!("{mhz} MHz"),
+                        (None, Some(temp)) => format!("{temp:.0}°C"),
+                        (None, None) => "—".to_string(),
+                    };
+                    v_flex()
+                        .flex_none()
+                        .w(px(120.))
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .justify_between()
+                                .text_xs()
+                                .child(div().text_color(muted).child(format!("c{ix}")))
+                                .child(
+                                    div()
+                                        .text_color(foreground)
+                                        .child(format!("{:.0}%", core.percent)),
+                                ),
+                        )
+                        .child(
+                            // The id must be unique per core: gpui-kit derives
+                            // the a11y node id from it and two bars sharing one
+                            // panic at window-build time.
+                            gpui_kit::component::progress::Progress::new(format!("core-{ix}"))
+                                .value(core.percent.clamp(0.0, 100.0))
+                                .color(fill),
+                        )
+                        .child(div().text_xs().text_color(muted).child(detail))
+                }),
+        )
 }
 
 /// A compact legend for the field chart, naming exactly the fields the chart
@@ -399,8 +460,22 @@ pub fn battery_panel(snapshot: Option<&Snapshot>, cx: &App) -> Div {
         )
 }
 
-/// The process list: a clickable sort bar, then a clipped, scrollable list of
-/// interactive rows.
+/// The process panel's controls: which column, which direction, and the filter.
+///
+/// Grouped rather than passed one by one — the panel already takes rows, a scale,
+/// a selection, a scroll handle and a context, and clippy's seven-argument limit
+/// is a fair line.
+pub struct ProcControls<'a> {
+    pub sort: ProcSort,
+    /// `false` is descending, which is verified behaviour rather than a guess.
+    pub reversed: bool,
+    pub filter: &'a str,
+    /// True while the filter box has the keyboard.
+    pub editing: bool,
+}
+
+/// The process list: a filter line, a clickable sort bar, then a clipped,
+/// scrollable list of interactive rows.
 ///
 /// Sorting and filtering already happened in `pull()`; this renders that order
 /// verbatim. This is the one panel that takes a `&mut Context<AppView>` rather
@@ -412,8 +487,7 @@ pub fn proc_panel(
     rows: &[ProcSnapshot],
     scale: SizeScale,
     selected: Option<i32>,
-    sort: ProcSort,
-    reversed: bool,
+    controls: &ProcControls<'_>,
     scroll: &ScrollHandle,
     cx: &mut Context<AppView>,
 ) -> Div {
@@ -435,16 +509,19 @@ pub fn proc_panel(
         rows_view.into_any_element()
     };
 
-    panel_body().child(proc_sort_bar(sort, reversed, cx)).child(
-        div()
-            .id("proc-scroll")
-            .flex_1()
-            .min_h_0()
-            .w_full()
-            .overflow_y_scroll()
-            .track_scroll(scroll)
-            .child(list),
-    )
+    panel_body()
+        .child(filter_line(controls, cx))
+        .child(proc_sort_bar(controls, cx))
+        .child(
+            div()
+                .id("proc-scroll")
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .overflow_y_scroll()
+                .track_scroll(scroll)
+                .child(list),
+        )
 }
 
 /// The sort bar above the process list.
@@ -453,8 +530,49 @@ pub fn proc_panel(
 /// has to line up exactly with five columns of a scrolling list to look right,
 /// and an unaligned header reads as a bug. This also makes the sort reachable at
 /// a glance, which a header that only responds to clicks does not.
-fn proc_sort_bar(sort: ProcSort, reversed: bool, cx: &mut Context<AppView>) -> impl IntoElement {
+/// The filter box, shown only while a filter is set or being typed.
+///
+/// Hidden when empty so it costs no vertical space in the common case, and
+/// visible while editing so the caret has somewhere to live — a filter you
+/// cannot see is a filter you cannot trust.
+fn filter_line(controls: &ProcControls<'_>, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
+    let (muted, foreground, border) = (theme.muted_foreground, theme.foreground, theme.border);
+    let shown = controls.editing || !controls.filter.is_empty();
+    let caret = if controls.editing { "▌" } else { "" };
+
+    h_flex()
+        .w_full()
+        .when(shown, |el| el.flex_none())
+        .when(!shown, |el| el.hidden())
+        .items_center()
+        .gap_2()
+        .pb_1()
+        .text_xs()
+        .child(div().flex_none().text_color(muted).child("filter:"))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_color(foreground)
+                // The caret is drawn after the text because this is a keyboard
+                // mode rather than a real text field, so there is nowhere else
+                // to show that the keyboard has been captured.
+                .child(if controls.filter.is_empty() {
+                    "type to filter · Enter keeps · Esc undoes".to_string()
+                } else {
+                    format!("{}{caret}", controls.filter)
+                }),
+        )
+        .when(!controls.filter.is_empty() && !controls.editing, |el| {
+            el.child(div().flex_none().text_color(border).child("Del to clear"))
+        })
+}
+
+fn proc_sort_bar(controls: &ProcControls<'_>, cx: &mut Context<AppView>) -> impl IntoElement {
+    let theme = cx.theme();
+    let (sort, reversed) = (controls.sort, controls.reversed);
     h_flex()
         .w_full()
         .flex_none()
