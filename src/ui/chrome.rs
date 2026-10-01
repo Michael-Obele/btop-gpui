@@ -59,6 +59,11 @@ pub fn panel(title: &str, body: impl IntoElement, cx: &App) -> Div {
 pub fn window_options() -> WindowOptions {
     WindowOptions {
         window_min_size: Some(gpui_kit::size(px(900.), px(600.))),
+        // Wayland's app id. **This** is what the compositor matches against the
+        // `.desktop` file's `StartupWMClass` to decide a window's name and icon.
+        // Setting only the window title is not enough — that is why the taskbar
+        // showed "Unknown" next to a generic icon.
+        app_id: Some("btop-gpui".to_string()),
         ..TitleBar::window_options()
     }
 }
@@ -98,6 +103,11 @@ impl Preset {
         PRESETS.iter().position(|p| p == self).unwrap_or(0)
     }
 
+    /// This preset's 1-based number, for the title bar. Users count from one.
+    pub fn number(self) -> usize {
+        self.index() + 1
+    }
+
     /// `p` and `Shift-P` step through the list, wrapping at both ends.
     pub fn next(self) -> Preset {
         PRESETS[(self.index() + 1) % PRESETS.len()]
@@ -125,19 +135,20 @@ impl Preset {
 /// why it is passed in rather than being derived from the value.
 pub fn meter(label: String, value: f32, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
+    let (muted, accent) = (theme.muted_foreground, theme.accent);
     let id = format!("meter-{label}");
     h_flex()
         .items_center()
         .gap_2()
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(label),
-        )
+        .child(div().text_xs().text_color(muted).child(label))
         .child(
             gpui_kit::component::progress::Progress::new(id)
                 .value(value.clamp(0.0, 100.0))
+                // Without an explicit colour the bar takes the theme's
+                // `progress_bar` token, which renders near-black in the light
+                // theme — a black bar across a white panel. `accent` is legible
+                // in both, and it matches the charts sitting beside it.
+                .color(accent)
                 .flex_1(),
         )
 }

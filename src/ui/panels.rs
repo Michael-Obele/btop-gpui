@@ -6,13 +6,17 @@
 
 use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Div, IntoElement, div, px};
+use gpui_kit::{
+    App, Context, Div, ElementId, IntoElement, MouseButton, ScrollHandle, SharedString, div, px,
+};
 
+use crate::app::AppView;
+use crate::collect::proc::ProcSort;
 use crate::format::{self, SizeScale};
 use crate::history::History;
 use crate::model::{CPU_FIELD_NAMES, ProcSnapshot, Snapshot};
 use crate::ui::chart;
-use crate::ui::chrome::{meter, or_dash, panel_body};
+use crate::ui::chrome::{meter, panel_body};
 
 /// Renders `—` when there is no snapshot yet.
 fn no_data(cx: &App) -> Div {
@@ -22,12 +26,7 @@ fn no_data(cx: &App) -> Div {
         .child("—")
 }
 
-pub fn cpu_panel(
-    snapshot: Option<&Snapshot>,
-    history: &History,
-    width: usize,
-    cx: &App,
-) -> impl IntoElement {
+pub fn cpu_panel(snapshot: Option<&Snapshot>, history: &History, tick_secs: f32, cx: &App) -> Div {
     let Some(s) = snapshot else {
         return no_data(cx);
     };
@@ -36,11 +35,17 @@ pub fn cpu_panel(
 
     panel_body()
         .child(
+            // `gap_2` and a shrinking model name are what stop these two texts
+            // colliding. `justify_between` alone cannot spread them in a box
+            // too narrow for both, so they simply butted together and read as
+            // "CPU 37%11th Gen Intel(R) Core(TM)".
             h_flex()
                 .justify_between()
                 .items_center()
+                .gap_2()
                 .child(
                     div()
+                        .flex_none()
                         .text_lg()
                         .font_weight(gpui_kit::FontWeight(500.0))
                         .text_color(theme.foreground)
@@ -48,6 +53,10 @@ pub fn cpu_panel(
                 )
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_right()
                         .text_xs()
                         .text_color(theme.muted_foreground)
                         .child(s.cpu.model_name.clone()),
@@ -59,13 +68,15 @@ pub fn cpu_panel(
             "cpu-total",
             &history.cpu_total,
             theme.accent,
-            width,
+            "cpu",
+            tick_secs,
         )))
-        .child(
-            div()
-                .h(px(70.))
-                .child(chart::cpu_fields_chart(history, &field_colors(cx), width)),
-        )
+        .child(div().h(px(70.)).child(chart::cpu_fields_chart(
+            history,
+            &field_colors(cx),
+            tick_secs,
+        )))
+        .child(field_legend_row(cx))
         .child(meter(format!("total {total}"), s.cpu.total_percent, cx))
         .child(
             h_flex()
@@ -76,6 +87,37 @@ pub fn cpu_panel(
                 .child(format!("up {}", format::duration(s.cpu.uptime_seconds)))
                 .child(format!("cores {}", s.cpu.core_count)),
         )
+}
+
+/// A compact legend for the field chart, naming exactly the fields the chart
+/// draws.
+///
+/// It is derived from `chart::plotted_field_indices`, not hand-written, so a
+/// change to which fields are plotted cannot leave the legend naming a series
+/// that is not on the graph.
+fn field_legend_row(cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    let colors = field_colors(cx);
+    let entries: Vec<(gpui_kit::Hsla, &'static str)> = chart::plotted_field_indices()
+        .into_iter()
+        .map(|ix| {
+            (
+                colors.get(ix).copied().unwrap_or_default(),
+                CPU_FIELD_NAMES.get(ix).copied().unwrap_or("?"),
+            )
+        })
+        .collect();
+    h_flex()
+        .flex_wrap()
+        .gap_2()
+        .children(entries.into_iter().map(move |(color, name)| {
+            h_flex()
+                .items_center()
+                .gap_1()
+                .child(div().size_2().rounded_full().bg(color))
+                .child(div().text_xs().text_color(muted).child(name))
+        }))
 }
 
 /// The colour per CPU field, in `CPU_FIELD_NAMES` order, taken from the theme
@@ -97,10 +139,10 @@ fn field_colors(cx: &App) -> Vec<gpui_kit::Hsla> {
 pub fn mem_panel(
     snapshot: Option<&Snapshot>,
     history: &History,
-    width: usize,
     scale: SizeScale,
+    tick_secs: f32,
     cx: &App,
-) -> impl IntoElement {
+) -> Div {
     let Some(s) = snapshot else {
         return no_data(cx);
     };
@@ -125,7 +167,8 @@ pub fn mem_panel(
             "mem-used",
             &history.mem_used,
             theme.chart_2,
-            width,
+            "used",
+            tick_secs,
         )))
         .child(meter(
             format!("used {}", format::bytes(s.mem.used_bytes, scale)),
@@ -163,10 +206,10 @@ pub fn net_panel(
     snapshot: Option<&Snapshot>,
     history: &History,
     interface: Option<&str>,
-    width: usize,
     scale: SizeScale,
+    tick_secs: f32,
     cx: &App,
-) -> impl IntoElement {
+) -> Div {
     let Some(s) = snapshot else {
         return no_data(cx);
     };
@@ -237,7 +280,11 @@ pub fn net_panel(
             u,
             theme.chart_1,
             theme.chart_2,
-            width,
+            chart::SeriesSpec {
+                names: ("download", "upload"),
+                unit: " B/s",
+                tick_secs,
+            },
         )));
     }
     body
@@ -247,8 +294,9 @@ pub fn disk_panel(
     snapshot: Option<&Snapshot>,
     history: &History,
     scale: SizeScale,
+    tick_secs: f32,
     cx: &App,
-) -> impl IntoElement {
+) -> Div {
     let Some(s) = snapshot else {
         return no_data(cx);
     };
@@ -308,13 +356,17 @@ pub fn disk_panel(
             w,
             theme.chart_3,
             theme.chart_4,
-            60,
+            chart::SeriesSpec {
+                names: ("read", "write"),
+                unit: " B/s",
+                tick_secs,
+            },
         )));
     }
     body
 }
 
-pub fn battery_panel(snapshot: Option<&Snapshot>, cx: &App) -> impl IntoElement {
+pub fn battery_panel(snapshot: Option<&Snapshot>, cx: &App) -> Div {
     let Some(s) = snapshot else {
         return no_data(cx);
     };
@@ -346,84 +398,243 @@ pub fn battery_panel(snapshot: Option<&Snapshot>, cx: &App) -> impl IntoElement 
         )
 }
 
-/// The process list. Sorting and filtering already happened in `pull()`; this
-/// renders that order verbatim, which is why `render()` allocates nothing.
+/// The process list: a clickable sort bar, then a clipped, scrollable list of
+/// interactive rows.
+///
+/// Sorting and filtering already happened in `pull()`; this renders that order
+/// verbatim. This is the one panel that takes a `&mut Context<AppView>` rather
+/// than `&App`, because its rows are the app's primary mouse target. Every
+/// handler below is a single call into an `AppView` method that the keyboard
+/// also uses, so the pointer path — which cannot be exercised on this machine —
+/// holds no logic of its own.
 pub fn proc_panel(
     rows: &[ProcSnapshot],
     scale: SizeScale,
     selected: Option<i32>,
-    cx: &App,
-) -> impl IntoElement {
-    let theme = cx.theme();
-    if rows.is_empty() {
-        return panel_body().child(
-            div()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child("no processes match"),
-        );
-    }
-    let mut body = panel_body().gap_0();
-    for p in rows {
-        let is_selected = Some(p.pid) == selected;
-        body = body.child(
-            h_flex()
-                .px_1()
-                .gap_2()
-                .items_center()
-                .rounded_sm()
-                .when(is_selected, |el| el.bg(theme.accent.opacity(0.18)))
-                .child(
-                    div()
-                        .w(px(56.))
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(p.pid.to_string()),
-                )
-                .child(
-                    div()
-                        .w(px(96.))
-                        .text_xs()
-                        .text_color(theme.foreground)
-                        .child(format!("{}{}", p.tree_prefix, p.name)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(p.user.clone()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.foreground)
-                        .child(format::bytes(p.mem_bytes, scale)),
-                )
-                .child(
-                    div()
-                        .w(px(56.))
-                        .text_right()
-                        .text_xs()
-                        .text_color(theme.foreground)
-                        .child(or_dash(Some(format::percent(p.cpu_percent, 1)))),
-                ),
-        );
-    }
-    body
+    sort: ProcSort,
+    reversed: bool,
+    scroll: &ScrollHandle,
+    cx: &mut Context<AppView>,
+) -> Div {
+    let muted = cx.theme().muted_foreground;
+
+    let list = if rows.is_empty() {
+        div()
+            .text_sm()
+            .text_color(muted)
+            .child("no processes match")
+            .into_any_element()
+    } else {
+        // A `for` loop rather than `.map()`: a closure would capture `cx` and
+        // could not hand the mutable borrow back out once per row.
+        let mut rows_view = v_flex().w_full().gap_0();
+        for p in rows {
+            rows_view = rows_view.child(proc_row(p, scale, selected, cx));
+        }
+        rows_view.into_any_element()
+    };
+
+    panel_body().child(proc_sort_bar(sort, reversed, cx)).child(
+        div()
+            .id("proc-scroll")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .overflow_y_scroll()
+            .track_scroll(scroll)
+            .child(list),
+    )
 }
 
-/// The legend row for one CPU field, in the same order as `field_colors`.
-pub fn field_legend(index: usize, cx: &App) -> impl IntoElement {
+/// The sort bar above the process list.
+///
+/// Deliberately a labelled row of buttons rather than a table header: a header
+/// has to line up exactly with five columns of a scrolling list to look right,
+/// and an unaligned header reads as a bug. This also makes the sort reachable at
+/// a glance, which a header that only responds to clicks does not.
+fn proc_sort_bar(sort: ProcSort, reversed: bool, cx: &mut Context<AppView>) -> impl IntoElement {
     let theme = cx.theme();
     h_flex()
+        .w_full()
+        .flex_none()
         .items_center()
-        .gap_1()
-        .child(div().size_2().rounded_full().bg(field_colors(cx)[index]))
+        .gap_2()
+        .pb_1()
+        .border_b_1()
+        .border_color(theme.border)
         .child(
             div()
+                .flex_none()
                 .text_xs()
                 .text_color(theme.muted_foreground)
-                .child(CPU_FIELD_NAMES[index.min(CPU_FIELD_NAMES.len() - 1)].to_string()),
+                .child(
+                    // Says out loud which way the list is ordered, so `r` and the
+                    // arrow on the active pill both have something to refer to.
+                    // `reversed == false` is descending: the header read
+                    // "ascending" over a list sorted 100% → 1.5% until this was
+                    // checked against the running app.
+                    format!(
+                        "sort: {} {}",
+                        sort.label(),
+                        if reversed { "ascending" } else { "descending" }
+                    ),
+                ),
+        )
+        .child(sort_button("pid", ProcSort::Pid, sort, reversed, cx))
+        .child(sort_button("name", ProcSort::Name, sort, reversed, cx))
+        .child(sort_button("user", ProcSort::User, sort, reversed, cx))
+        .child(sort_button("memory", ProcSort::Memory, sort, reversed, cx))
+        .child(sort_button("cpu", ProcSort::CpuDirect, sort, reversed, cx))
+        // btop's `cpu lazy` averages over process lifetime instead of using the
+        // instantaneous delta, which is why `top` and `btop` disagree. Both are
+        // offered because the two answer different questions.
+        .child(sort_button(
+            "cpu lazy",
+            ProcSort::CpuLazy,
+            sort,
+            reversed,
+            cx,
+        ))
+}
+
+/// One sort pill. Clicking the active column flips the direction — btop's `r`.
+fn sort_button(
+    label: &'static str,
+    wanted: ProcSort,
+    sort: ProcSort,
+    reversed: bool,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let theme = cx.theme();
+    let active = wanted == sort;
+    let fg = if active {
+        theme.accent
+    } else {
+        theme.muted_foreground
+    };
+    let border = if active { theme.accent } else { theme.border };
+
+    div()
+        .id(ElementId::Name(SharedString::from(format!("sort-{label}"))))
+        .flex_none()
+        .px_2()
+        .py_0p5()
+        .rounded_md()
+        .border_1()
+        .border_color(border)
+        .cursor_pointer()
+        .text_xs()
+        .text_color(fg)
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(
+                move |this, _event: &gpui_kit::MouseDownEvent, _window, cx| {
+                    this.sort_by(wanted, cx);
+                },
+            ),
+        )
+        .child(if active {
+            // The arrow only exists on the active pill, so the bar reads as a
+            // sort control rather than a row of glyphs.
+            format!("{label} {}", if reversed { "▾" } else { "▴" })
+        } else {
+            label.to_string()
+        })
+}
+
+/// One row of the process list.
+///
+/// Interactive, four ways: hover lifts it, a click selects, a double click opens
+/// the detail sheet, a right click opens the process menu.
+///
+/// The element id comes from the **pid**, never the row's position. The list is
+/// re-sorted every 2 seconds, so an index-keyed row would hand its hover and
+/// selection state to whichever process moved into that slot.
+fn proc_row(
+    p: &ProcSnapshot,
+    scale: SizeScale,
+    selected: Option<i32>,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let theme = cx.theme();
+    let is_selected = Some(p.pid) == selected;
+    let pid = p.pid;
+    // Copied out of the theme up front: `cx` is borrowed mutably below for the
+    // click listeners, so the theme borrow has to be over by then.
+    let (muted, foreground, accent) = (theme.muted_foreground, theme.foreground, theme.accent);
+    let (hover_bg, selected_bg) = (accent.opacity(0.10), accent.opacity(0.18));
+
+    h_flex()
+        .id(ElementId::Name(SharedString::from(format!(
+            "proc-row-{pid}"
+        ))))
+        .px_1()
+        .gap_2()
+        .items_center()
+        .rounded_sm()
+        .cursor_pointer()
+        .when(is_selected, |el| el.bg(selected_bg))
+        .hover(move |s| s.bg(hover_bg))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _window, cx| {
+                // `click_count` lets one handler cover both gestures, so there
+                // is no separate double-click registration to keep in sync.
+                if event.click_count >= 2 {
+                    this.open_detail(pid, cx);
+                } else {
+                    this.select(Some(pid), cx);
+                }
+            }),
+        )
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(
+                move |this, _event: &gpui_kit::MouseDownEvent, _window, cx| {
+                    this.open_process_menu(pid, cx);
+                },
+            ),
+        )
+        .child(
+            div()
+                .flex_none()
+                .w(px(56.))
+                .text_xs()
+                .text_color(muted)
+                .child(p.pid.to_string()),
+        )
+        .child(
+            div()
+                .w(px(160.))
+                .min_w_0()
+                .truncate()
+                .text_xs()
+                .text_color(foreground)
+                .child(format!("{}{}", p.tree_prefix, p.name)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_xs()
+                .text_color(muted)
+                .child(p.user.clone()),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_xs()
+                .text_color(foreground)
+                .child(format::bytes(p.mem_bytes, scale)),
+        )
+        .child(
+            div()
+                .flex_none()
+                .w(px(56.))
+                .text_right()
+                .text_xs()
+                .text_color(foreground)
+                .child(format::percent(p.cpu_percent, 1)),
         )
 }

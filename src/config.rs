@@ -41,6 +41,12 @@ pub const DESCRIPTIONS: &[(&str, OptType, &str, &str)] = &[
         "Paint the theme background",
     ),
     (
+        "theme_mode",
+        OptType::Str,
+        "System",
+        "Dark | Light | System (System follows the desktop)",
+    ),
+    (
         "update_ms",
         OptType::Int,
         "2000",

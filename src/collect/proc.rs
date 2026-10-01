@@ -178,6 +178,94 @@ impl ProcSort {
             _ => Self::Pid,
         }
     }
+
+    /// Every column, in the order `c` cycles them.
+    ///
+    /// CPU leads because that is what a system monitor is for, and because it
+    /// matches the default `proc_sorting` — so the first press of `c` moves to
+    /// the next column rather than disrupting the view.
+    pub const ALL: [ProcSort; 8] = [
+        Self::CpuDirect,
+        Self::CpuLazy,
+        Self::Memory,
+        Self::Pid,
+        Self::Name,
+        Self::Command,
+        Self::User,
+        Self::Threads,
+    ];
+
+    /// The next sort column, wrapping at the end.
+    pub fn next(self) -> Self {
+        let ix = Self::ALL.iter().position(|s| *s == self).unwrap_or(0);
+        Self::ALL[(ix + 1) % Self::ALL.len()]
+    }
+
+    /// The column name, for the process panel header.
+    ///
+    /// These are btop's own `proc_sorting` strings, so `from_config` maps them
+    /// straight back — which is what lets the round-trip test below pin that
+    /// every column can actually be saved and restored.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pid => "pid",
+            Self::Name => "name",
+            Self::Command => "command",
+            Self::Threads => "threads",
+            Self::User => "user",
+            Self::Memory => "memory",
+            Self::CpuDirect => "cpu direct",
+            Self::CpuLazy => "cpu lazy",
+        }
+    }
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::ProcSort;
+
+    #[test]
+    fn cycling_visits_every_column_and_wraps_to_the_start() {
+        let mut sort = ProcSort::CpuDirect;
+        let mut seen = Vec::new();
+        for _ in 0..ProcSort::ALL.len() {
+            seen.push(sort.label());
+            sort = sort.next();
+        }
+        let mut unique = seen.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            seen.len(),
+            "a sort column is reachable twice: {seen:?}"
+        );
+        assert_eq!(
+            sort.label(),
+            ProcSort::CpuDirect.label(),
+            "the cycle must return to where it started"
+        );
+    }
+
+    #[test]
+    fn all_lists_every_variant_exactly_once() {
+        // A variant missing from `ALL` can never be reached by `next`, so the
+        // cycle would silently skip a column and `position` would fall back to
+        // `unwrap_or(0)` and jump to the first one instead.
+        let mut labels: Vec<&str> = ProcSort::ALL.iter().map(|s| s.label()).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(
+            labels.len(),
+            ProcSort::ALL.len(),
+            "ALL contains a duplicate or an unlabelled variant"
+        );
+        // Every variant must also be reachable from `from_config`, or a saved
+        // setting could not be restored.
+        for sort in ProcSort::ALL {
+            assert_eq!(ProcSort::from_config(sort.label()), sort);
+        }
+    }
 }
 
 /// A compiled process filter.

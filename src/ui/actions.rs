@@ -1,69 +1,41 @@
-//! Key actions and their bindings.
+//! Key actions and their descriptions.
 //!
-//! # The three moving parts
+//! # There is deliberately no `actions!` block here
 //!
-//! 1. Declare the action with [`actions!`].
-//! 2. Bind a key to it with `cx.bind_keys([KeyBinding::new("key", Action, None)])`.
-//! 3. Handle it in `render()` with `.on_key_down(..)` or `.on_action(..)`.
+//! There used to be, with a `register()` that called `cx.bind_keys`. It never
+//! worked: `main.rs` never called `register()`, and nothing handled the actions
+//! with `on_action`. The result was that `p`, `T`, `c` and `r` appeared in the
+//! help overlay and did nothing when pressed — the overlay was simply lying.
 //!
-//! All three are required. Declaring and handling without a binding means the
-//! key does nothing; a binding without a handler is silently swallowed.
+//! Rather than keep two half-wired mechanisms, the app dispatches raw keys in
+//! `AppView::on_key_down`, one place that provably runs. This module keeps
+//! [`key_bindings`] as the single source of truth for what the overlay lists,
+//! plus the signal and renice helpers those keys call.
 
-use gpui_kit::actions;
-
-actions!(
-    btop_gpui,
-    [
-        /// Toggle the help overlay.
-        ToggleHelp,
-        /// Step to the next layout preset.
-        NextPreset,
-        /// Step to the previous layout preset.
-        PrevPreset,
-        /// Toggle the process tree.
-        ToggleTree,
-        /// Cycle the process sort column.
-        CycleSort,
-        /// Reverse the process sort direction.
-        ReverseSort,
-        /// Close any open dialog or overlay.
-        Dismiss,
-    ]
-);
-
-use gpui_kit::{App, KeyBinding};
-
-/// Every binding, as `(key, description)`, in the order the help overlay
-/// lists them. Kept in one place so the overlay cannot drift from the
-/// registrations below.
+/// Every key the app handles, as `(key, description)`, in the order the help
+/// overlay lists them.
+///
+/// This must stay in step with `AppView::on_key_down` — the two cannot be tied
+/// together by the compiler, so a key added in one place has to be added here
+/// too or the overlay starts lying again.
 pub fn key_bindings() -> Vec<(&'static str, &'static str)> {
     vec![
         ("?", "toggle help"),
+        ("h", "toggle help"),
         ("Esc", "close dialog"),
+        ("m", "open the options menu"),
+        ("q", "quit"),
         ("p", "next layout preset"),
         ("Shift-P", "previous layout preset"),
-        ("T", "toggle process tree"),
-        ("c", "cycle process sort column"),
-        ("r", "reverse process sort"),
-        ("f", "toggle process filter"),
-        ("t", "terminate selected process"),
-        ("k", "kill selected process"),
+        ("e", "toggle process tree"),
+        ("r", "reverse the sort order"),
+        ("Shift-D", "cycle theme: system / dark / light"),
+        ("Enter", "show the selected process"),
+        ("t", "terminate selected process (asks first)"),
+        ("k", "kill selected process (asks first)"),
         ("+", "raise nice value"),
         ("-", "lower nice value"),
     ]
-}
-
-/// Register the bindings. Called once, when the root view is built.
-pub fn register(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("question-mark", ToggleHelp, None),
-        KeyBinding::new("escape", Dismiss, None),
-        KeyBinding::new("p", NextPreset, None),
-        KeyBinding::new("shift-p", PrevPreset, None),
-        KeyBinding::new("shift-t", ToggleTree, None),
-        KeyBinding::new("c", CycleSort, None),
-        KeyBinding::new("r", ReverseSort, None),
-    ]);
 }
 
 /// Send a signal to a pid, turning an errno into something showable.

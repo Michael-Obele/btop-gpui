@@ -63,11 +63,19 @@ fn power_watts(dir: &Path) -> Option<f32> {
     }
     let current = sysfs::read_i64(dir.join("current_now"))?;
     let voltage = sysfs::read_i64(dir.join("voltage_now"))?;
-    if current < 0 || voltage < 0 {
+    watts_from_micro(current, voltage)
+}
+
+/// Watts from the `current_now` (µA) and `voltage_now` (µV) pair.
+///
+/// Their product is in **picowatts**, not microwatts: 1e-6 A × 1e-6 V = 1e-12 W.
+/// So the divisor is 1e12. Dividing by 1e6 — as this did — is a factor of a
+/// million out, and reported a 13.75 W laptop as "13753200.0W".
+pub fn watts_from_micro(current_ua: i64, voltage_uv: i64) -> Option<f32> {
+    if current_ua < 0 || voltage_uv < 0 {
         return None;
     }
-    // Both are in µA and µV, so the product is µW; /1e6 gives W.
-    let w = (current as f64) * (voltage as f64) / 1e6;
+    let w = (current_ua as f64) * (voltage_uv as f64) / 1e12;
     w.is_finite().then_some(w as f32)
 }
 
@@ -227,6 +235,22 @@ impl BatteryCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watts_from_micro_is_picowatts_not_microwatts() {
+        // 3.75 A at 3.667 V is 13.75 W. The old /1e6 turned this same reading
+        // into 13753200.0 W, which is what the battery panel displayed.
+        let w = watts_from_micro(3_750_000, 3_667_000).expect("finite");
+        assert!((w - 13.751).abs() < 0.01, "expected ~13.75 W, got {w}");
+    }
+
+    #[test]
+    fn a_negative_reading_is_none_not_a_negative_wattage() {
+        // A discharging pack can report a negative current; that must not
+        // become a negative draw.
+        assert!(watts_from_micro(-1, 3_667_000).is_none());
+        assert!(watts_from_micro(3_750_000, -1).is_none());
+    }
 
     #[test]
     fn status_strings_map_to_variants() {

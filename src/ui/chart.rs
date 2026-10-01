@@ -17,7 +17,7 @@
 
 use gpui_kit::component::chart::{AreaChart, LineChart};
 use gpui_kit::prelude::*;
-use gpui_kit::{IntoElement, div};
+use gpui_kit::{IntoElement, SharedString, div};
 
 use crate::history::Ring;
 
@@ -29,11 +29,11 @@ pub const NOT_ENOUGH_DATA: &str = "—";
 /// extent, and two cannot show a trend.
 pub const MIN_SAMPLES: usize = 2;
 
-/// One plotted sample: the value plus a label for the x axis.
+/// One plotted sample: the value plus its age, for the x axis.
 ///
 /// `AreaChart` requires `X: Into<SharedString>`, and **only string types**
 /// implement that (`&str`, `String`, `Arc<str>`) — a numeric x does not
-/// compile. So the index is carried as a label rather than as a number.
+/// compile. So the age is carried as a label.
 #[derive(Clone)]
 struct Sample {
     label: String,
@@ -45,47 +45,133 @@ struct Sample {
 #[derive(Clone)]
 struct FieldRow {
     label: String,
+    /// Indexed by the **original** `CPU_FIELD_NAMES` position, so the colour a
+    /// field gets does not change when another field is left out of the plot.
     values: Vec<f32>,
 }
 
-fn samples_from(ring: &Ring<f32>) -> Vec<Sample> {
+/// How many ticks back the x axis labels show, at most.
+///
+/// Without this the chart prints one label under *every* sample it is given —
+/// up to 240 of them — which is what smeared unreadable numbers across the
+/// bottom of each panel.
+const X_TICKS: usize = 4;
+
+fn samples_from(ring: &Ring<f32>, tick_secs: f32) -> Vec<Sample> {
+    let len = ring.len();
     ring.iter()
         .enumerate()
+        // `len - 1 - i` samples back is how old this one is, so the newest
+        // reads "now". The previous code used the raw index, which put "0" at
+        // both ends of the axis and told the reader nothing.
         .map(|(i, v)| Sample {
-            label: i.to_string(),
+            label: age_label((len - 1 - i) as f32 * tick_secs),
             value: *v,
         })
         .collect()
 }
 
+/// The x-axis label for a sample `age_secs` old.
+///
+/// Seconds rather than a tick count: on a rolling graph, "how far back is this
+/// point" is the only thing the x axis means, and the tick interval is a config
+/// value the reader should not have to know to read the chart.
+fn age_label(age_secs: f32) -> String {
+    let secs = age_secs.round();
+    if secs <= 0.0 {
+        "now".to_string()
+    } else if secs < 60.0 {
+        format!("-{secs:.0}s")
+    } else {
+        format!("-{:.0}m", (secs / 60.0).round())
+    }
+}
+
+/// A compact byte-rate label for an axis tick: `1.2M`, `181k`, `0`.
+///
+/// The raw value is bytes per second, and an axis tick reading `180878.5` is
+/// unreadable — the magnitude is the point of the number, not its precision.
+fn compact_rate(value: f64) -> String {
+    const K: f64 = 1_000.0;
+    const M: f64 = 1_000_000.0;
+    if value >= M {
+        format!("{:.1}M", value / M)
+    } else if value >= K {
+        format!("{:.0}k", value / K)
+    } else {
+        format!("{value:.0}")
+    }
+}
+
+/// A percentage label for an axis tick.
+fn percent_tick(value: f64) -> String {
+    format!("{value:.0}%")
+}
+
+/// The element shown when there is nothing honest to draw yet: an empty box
+/// that still occupies its parent, so the panel does not jump when data lands.
+fn empty() -> gpui_kit::AnyElement {
+    div().h_full().w_full().into_any_element()
+}
+
 /// A filled area graph of one series on a 0-100 axis.
+///
+/// `point_count` is deliberately **not** set. Setting it to the ring capacity
+/// (as this did) lays the x axis out for every slot the ring *could* hold, so
+/// a graph that had collected three samples drew a one-pixel sliver against
+/// the left edge for the first several minutes and looked broken. Omitting it
+/// falls back to the sample count, so the trace always spans the panel. The
+/// axis labels are relative ages, so nothing is lost by rescaling.
 pub fn percent_chart(
     id: &'static str,
     ring: &Ring<f32>,
     color: gpui_kit::Hsla,
-    width: usize,
+    name: &'static str,
+    tick_secs: f32,
 ) -> gpui_kit::AnyElement {
-    let samples = samples_from(ring);
+    let samples = samples_from(ring, tick_secs);
     if samples.len() < MIN_SAMPLES {
-        return div().h_full().w_full().into_any_element();
+        return empty();
     }
-    // X is the sample index: `AreaChart` requires `X: Into<SharedString>`, so a
-    // float x is not even representable.
     AreaChart::new(samples)
         .id(id)
         .x(|s: &Sample| s.label.clone())
         .y(|s: &Sample| s.value)
         .stroke(color)
-        // The official docs use `.fill(color.opacity(0.4))` for an area chart;
-        // a solid fill hides the grid lines underneath it.
+        // The docs use `.fill(color.opacity(0.4))` for an area chart; a solid
+        // fill hides the grid lines underneath it.
         .fill(color.opacity(0.4))
+        // The label for this series' row in the tooltip.
+        .name(name)
         .grid(true)
+        .grid_dashed(false)
+        .y_axis(true)
+        .y_tick_count(3)
+        .x_tick_count(X_TICKS)
         .y_domain(0.0f32, 100.0f32)
-        // Lays the x axis out for `width` slots rather than for however many
-        // samples are buffered, so the axis does not breathe as the ring fills.
-        .point_count(width.max(MIN_SAMPLES))
-        .interactive(false)
+        // `y_padding` keeps 10px of headroom above the highest value by
+        // default, which is why a 0-100 domain labelled its top tick 112.2.
+        .y_padding(0.0, 0.0)
+        .y_tick_format(percent_tick)
+        .tooltip_title(|s: &Sample| SharedString::from(s.label.clone()))
+        .tooltip_value(|_s: &Sample, _ix: usize, value: f64| {
+            SharedString::from(format!("{value:.1}%"))
+        })
         .into_any_element()
+}
+
+/// How a two-series chart should be labelled.
+///
+/// Grouped rather than passed as three more parameters: `dual_chart` already
+/// takes six, and clippy's limit of seven is a fair line.
+#[derive(Clone, Copy)]
+pub struct SeriesSpec {
+    /// Names for the two series, in the order their `.y()` accessors are added.
+    pub names: (&'static str, &'static str),
+    /// Suffix for the tooltip value, e.g. `" B/s"`.
+    pub unit: &'static str,
+    /// Seconds one sample covers, so the x axis can read `-8s` instead of `-4`.
+    pub tick_secs: f32,
 }
 
 /// Two series on one axis — network down and up, disk read and write.
@@ -95,13 +181,14 @@ pub fn dual_chart(
     b: &Ring<f32>,
     color_a: gpui_kit::Hsla,
     color_b: gpui_kit::Hsla,
-    width: usize,
+    spec: SeriesSpec,
 ) -> impl IntoElement {
-    let first = samples_from(a);
-    let second = samples_from(b);
+    let first = samples_from(a, spec.tick_secs);
+    let second = samples_from(b, spec.tick_secs);
     if first.len() < MIN_SAMPLES || second.len() < MIN_SAMPLES {
-        return div().h_full().w_full().into_any_element();
+        return empty();
     }
+    let unit = spec.unit;
     // Both series share one domain, so the limit comes from the larger of the
     // two rings rather than from either alone.
     let peak = first
@@ -115,78 +202,132 @@ pub fn dual_chart(
         .y(|s: &Sample| s.value)
         .stroke(color_a)
         .fill(color_a.opacity(0.4))
+        .name(spec.names.0)
         .y(|s: &Sample| s.value)
         .stroke(color_b)
         .fill(color_b.opacity(0.4))
+        .name(spec.names.1)
         .grid(true)
+        .grid_dashed(false)
+        .y_axis(true)
+        .y_tick_count(3)
+        .x_tick_count(X_TICKS)
         .y_domain(0.0f32, peak.max(1.0))
-        .point_count(width.max(MIN_SAMPLES))
-        .interactive(false)
+        // The y scale here follows the data, so headroom would misreport the
+        // peak; the top tick must be the actual maximum.
+        .y_padding(0.0, 0.0)
+        .y_tick_format(compact_rate)
+        .tooltip_title(|s: &Sample| SharedString::from(s.label.clone()))
+        .tooltip_value(move |_s: &Sample, _ix: usize, value: f64| {
+            SharedString::from(format!("{value:.1}{unit}"))
+        })
         .into_any_element()
 }
 
-/// The CPU field breakdown: one filled area per field on a shared 0-100 axis.
+/// The `CPU_FIELD_NAMES` entries that are worth plotting.
 ///
-/// A multi-series chart is a single `AreaChart` with `.y()` chained once per
-/// series — not one chart per field, which would give each its own axis.
+/// `idle` is excluded, and that single omission is the difference between a
+/// readable chart and a grey wedge: idle is normally 90%+, so on a shared
+/// 0-100 axis it flattens every other field onto the floor. The remaining
+/// fields partition *busy* time, so they genuinely belong on one scale.
+pub fn plotted_field_indices() -> Vec<usize> {
+    crate::model::CPU_FIELD_NAMES
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| !name.eq_ignore_ascii_case("idle"))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// The CPU field breakdown: one area per *busy* field on a shared 0-100 axis.
+///
+/// gpui-kit has no stacked-area chart, so these overlap rather than stack. The
+/// fill is therefore kept faint and the stroke solid: with eight (now seven)
+/// 40%-opacity fills on top of each other nothing was legible.
 pub fn cpu_fields_chart(
     history: &crate::history::History,
     colors: &[gpui_kit::Hsla],
-    width: usize,
+    tick_secs: f32,
 ) -> gpui_kit::AnyElement {
-    // Every field has its own data set, and `AreaChart` runs each series'
-    // accessor over the SAME `data` passed to `new`. So a multi-series chart
-    // must be built from a single datum type that carries every field:
-    // `FieldRow { label, values: Vec<f32> }`, with one `.y()` per index into
-    // `values`. Passing the first field's data and adding a second `.y()` that
-    // reads `s.value` would just redraw field 0.
-    let mut fields = history
+    // Every field has its own ring, and `AreaChart` runs each series' accessor
+    // over the SAME `data` passed to `new`. So a multi-series chart must be
+    // built from one datum type carrying every field: `FieldRow`, with one
+    // `.y()` per index into `values`. Passing field 0's data and adding a
+    // second `.y()` that reads `s.value` would just redraw field 0.
+    let mut rings = history
         .cpu_fields
         .iter()
-        .map(samples_from)
+        .map(|r| samples_from(r, tick_secs))
         .filter(|f: &Vec<Sample>| f.len() >= MIN_SAMPLES)
         .collect::<Vec<Vec<Sample>>>();
-    if fields.is_empty() {
-        return div().h_full().w_full().into_any_element();
+    if rings.is_empty() {
+        return empty();
     }
-    // Row-wise: sample i of every field becomes one datum.
-    let rows: Vec<FieldRow> = (0..fields[0].len())
+    // Row-wise: sample i of every field becomes one datum, keeping the ring's
+    // own field order so `values[field_ix]` is always that field.
+    let rows: Vec<FieldRow> = (0..rings[0].len())
         .map(|i| FieldRow {
-            label: i.to_string(),
-            values: fields
+            label: rings[0]
+                .get(i)
+                .map_or_else(String::new, |s| s.label.clone()),
+            values: rings
                 .iter()
                 .map(|f| f.get(i).map_or(0.0, |s| s.value))
                 .collect(),
         })
         .collect();
-    fields.clear();
+    rings.clear();
 
-    let c0 = colors.first().copied().unwrap_or_default();
+    let plotted = plotted_field_indices();
+    let first = match plotted.first().copied() {
+        Some(ix) => ix,
+        None => return empty(),
+    };
+    let c0 = colors.get(first).copied().unwrap_or_default();
+
     let mut chart = AreaChart::new(rows)
         .id("cpu-fields")
         .x(|r: &FieldRow| r.label.clone())
-        .y(|r: &FieldRow| r.values.first().copied().unwrap_or(0.0))
+        .y(move |r: &FieldRow| r.values.get(first).copied().unwrap_or(0.0))
         .stroke(c0)
-        .fill(c0.opacity(0.4))
+        .fill(c0.opacity(0.10))
+        // Names each series' row in the tooltip, so the reader is told *which*
+        // field the number belongs to instead of having to match colours.
+        .name(cpu_field_name(first))
         .grid(true)
+        .grid_dashed(false)
+        .y_axis(true)
+        .y_tick_count(3)
+        .x_tick_count(X_TICKS)
         .y_domain(0.0f32, 100.0f32)
-        .point_count(width.max(MIN_SAMPLES))
-        .interactive(false);
-    // One `.y()` per field beyond the first; index i+1 selects that field.
-    for (i, _) in (1..fields_len_hint(history)).enumerate() {
-        let c = colors.get(i + 1).copied().unwrap_or(c0);
-        let index = i + 1;
+        .y_padding(0.0, 0.0)
+        .y_tick_format(percent_tick)
+        .tooltip_title(|r: &FieldRow| SharedString::from(r.label.clone()))
+        .tooltip_value(|_r: &FieldRow, _ix: usize, value: f64| {
+            SharedString::from(format!("{value:.1}%"))
+        });
+    // One `.y()` per remaining field; each is the index of that field in
+    // `values`, so the series and the colours stay aligned.
+    for &ix in plotted.iter().skip(1) {
+        let c = colors.get(ix).copied().unwrap_or(c0);
         chart = chart
-            .y(move |r: &FieldRow| r.values.get(index).copied().unwrap_or(0.0))
+            .y(move |r: &FieldRow| r.values.get(ix).copied().unwrap_or(0.0))
             .stroke(c)
-            .fill(c.opacity(0.4));
+            .fill(c.opacity(0.10))
+            .name(cpu_field_name(ix));
     }
     chart.into_any_element()
 }
 
-/// How many CPU field rings currently hold data.
-fn fields_len_hint(history: &crate::history::History) -> usize {
-    history.cpu_fields.len()
+/// The display name of a `CPU_FIELD_NAMES` entry.
+///
+/// Falls back to `"?"` rather than indexing: a chart label is not worth a panic
+/// on the UI thread, which would take the window down.
+fn cpu_field_name(ix: usize) -> &'static str {
+    crate::model::CPU_FIELD_NAMES
+        .get(ix)
+        .copied()
+        .unwrap_or("?")
 }
 
 /// A plain line for one trace.
@@ -194,20 +335,27 @@ pub fn line_chart(
     id: &'static str,
     ring: &Ring<f32>,
     color: gpui_kit::Hsla,
-    width: usize,
+    name: &'static str,
+    tick_secs: f32,
 ) -> gpui_kit::AnyElement {
-    let samples = samples_from(ring);
+    let samples = samples_from(ring, tick_secs);
     if samples.len() < MIN_SAMPLES {
-        return div().h_full().w_full().into_any_element();
+        return empty();
     }
     LineChart::new(samples)
         .id(id)
         .x(|s: &Sample| s.label.clone())
         .y(|s: &Sample| s.value)
         .stroke(color)
+        .name(name)
         .grid(true)
-        .point_count(width.max(MIN_SAMPLES))
-        .interactive(false)
+        .grid_dashed(false)
+        .y_axis(true)
+        .y_tick_count(3)
+        .x_tick_count(X_TICKS)
+        .y_padding(0.0, 0.0)
+        .tooltip_title(|s: &Sample| SharedString::from(s.label.clone()))
+        .tooltip_value(|_s: &Sample, value: f64| SharedString::from(format!("{value:.1}")))
         .into_any_element()
 }
 

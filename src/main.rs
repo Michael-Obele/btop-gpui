@@ -16,11 +16,11 @@
 use gpui_kit::prelude::*;
 use std::sync::Arc;
 
-use gpui_kit::component::theme::ThemeMode;
 use gpui_kit::{WindowOptions, px, size};
 
 use btop_gpui::app::AppView;
 use btop_gpui::ui::chrome::window_options;
+use btop_gpui::ui::theme;
 use btop_gpui::{collect, config::Config, logger};
 
 fn main() {
@@ -51,14 +51,10 @@ fn main() {
             // Must precede any use of the component library.
             gpui_kit::init(cx);
 
-            // btop's `theme_background` picks light vs dark; the default is
-            // dark, which is what a monitor window wants on a desktop.
-            let mode = if cfg_for_run.bool("theme_background") {
-                ThemeMode::Light
-            } else {
-                ThemeMode::Dark
-            };
-            gpui_kit::component::theme::Theme::change(mode, None, cx);
+            // Dark unless the config says otherwise. `theme_mode = System`
+            // follows the desktop's colour-scheme preference; `Shift-D` or the
+            // title-bar button cycles it live without a restart.
+            theme::apply(&cfg_for_run, cx);
 
             let options = WindowOptions {
                 window_min_size: Some(size(px(900.), px(600.))),
@@ -66,7 +62,11 @@ fn main() {
             };
 
             let cfg_for_view = cfg_for_run.clone();
-            gpui_kit::open_window(options, cx, move |_window, cx| {
+            gpui_kit::open_window(options, cx, move |window, cx| {
+                // Without a title the taskbar and the GNOME overview both show
+                // "Unknown", which makes the app impossible to pick out of a
+                // window list — and the `.desktop` StartupWMClass cannot match.
+                window.set_window_title("btop-gpui");
                 cx.new(|cx| AppView::new(cfg_for_view.clone(), shared_for_run, cx))
             })
             .expect("failed to open the btop-gpui window");

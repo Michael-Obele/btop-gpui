@@ -31,16 +31,18 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::component::ActiveTheme;
-use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::{ActiveTheme, Icon, TitleBar, h_flex, v_flex, window_border};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, FocusHandle, Render, Window, div, px};
+use gpui_kit::{Context, ElementId, FocusHandle, Render, ScrollHandle, SharedString, Window, div};
 
+use crate::collect::proc::ProcSort;
 use crate::collect::{self, Shared};
 use crate::config::Config;
 use crate::history::{History, clamp_columns};
 use crate::model::{ProcSnapshot, Snapshot};
 use crate::ui::chrome::{PRESETS, Preset, panel, status_bar};
+use crate::ui::theme::{self, ThemeChoice};
 use crate::ui::{dialogs, panels};
 
 /// What the user can act on. UI state never goes in the model.
@@ -56,6 +58,8 @@ pub enum Dialog {
     Message(String),
     /// The per-process detail sheet.
     Detail(i32),
+    /// The right-click menu for a process row.
+    ProcessMenu(i32),
 }
 
 pub struct AppView {
@@ -77,6 +81,17 @@ pub struct AppView {
     filter: collect::proc::CompiledFilter,
     selected_pid: Option<i32>,
     dialog: Dialog,
+    /// The theme the user asked for. Kept as the *choice* rather than the
+    /// resolved mode, so `System` keeps following the desktop instead of
+    /// freezing into whichever mode it happened to resolve to at startup.
+    theme_choice: ThemeChoice,
+    /// The interface the net panel pins, or `None` for Auto. Cached here
+    /// because the config hands out owned strings and `selected_net` has to
+    /// return a borrow.
+    net_iface: Option<String>,
+    /// Scroll position of the process list. Owned here because the list has to
+    /// stay clipped and scrollable, not grow to its content height.
+    proc_scroll: ScrollHandle,
     /// Graph columns to keep: `width * 2`, matching btop's
     /// two-samples-per-rendered-column rule.
     cols: usize,
@@ -97,6 +112,9 @@ impl AppView {
             proc_reversed: false,
             selected_pid: None,
             dialog: Dialog::None,
+            theme_choice: ThemeChoice::parse(&config.str("theme_mode")),
+            net_iface: configured_iface(&config),
+            proc_scroll: ScrollHandle::new(),
             cols: 120,
             last_seen: 0,
             focus_handle: cx.focus_handle(),
@@ -175,6 +193,7 @@ impl AppView {
         self.proc_sort = collect::proc::ProcSort::from_config(&cfg.str("proc_sorting"));
         self.proc_tree = cfg.bool("proc_tree");
         self.filter = collect::proc::compile_filter(&cfg.str("proc_filter"));
+        self.net_iface = configured_iface(&cfg);
         let interval = cfg.update_interval();
         self.config = cfg.clone();
         self.shared.push_config(cfg);
@@ -184,12 +203,15 @@ impl AppView {
     }
 
     /// Which interface the net panel shows, honouring `net_iface`.
+    ///
+    /// The configured name is read from `self.net_iface`, not from the config:
+    /// `Config::str` hands back an owned `String`, so the previous version
+    /// `Box::leak`ed a fresh copy on every call — and `render()` calls this
+    /// once per frame, so it leaked the interface name sixty times a second
+    /// for the life of the process.
     fn selected_net(&self) -> Option<&str> {
-        let configured = self.config.str("net_iface");
-        if configured != "Auto" && !configured.trim().is_empty() {
-            // Borrowed from the config, which outlives the call.
-            let leaked: &'static str = Box::leak(configured.into_boxed_str());
-            return Some(leaked);
+        if let Some(name) = &self.net_iface {
+            return Some(name.as_str());
         }
         // Auto: the collector already ranked them, busiest first.
         self.snapshot
@@ -221,46 +243,87 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+        // Read the one token the root itself paints with, as a `Copy` value.
+        // Holding the result of `cx.theme()` across the calls below would borrow
+        // `cx` for the whole function, and the process panel needs it mutably.
+        let window_bg = cx.theme().background;
         let snap = self.snapshot.as_deref();
         let scale = self.config.size_scale();
-        let cols = clamp_columns(self.cols);
+        // How much time one ring sample represents. The charts turn this into
+        // "-8s" axis labels and tooltip titles, so the reader is told how far
+        // back a point is instead of being handed a tick index.
+        let tick_secs = self.config.update_interval().as_secs_f32();
 
-        // The battery panel is absent entirely when there is no battery, which
-        // is the normal case on a desktop.
-        let mut grid = h_flex()
-            .flex_1()
-            .min_h_0()
-            .gap_2()
-            .p_2()
-            .child(panel(
-                "CPU",
-                panels::cpu_panel(snap, &self.history, cols, cx),
-                cx,
-            ))
-            .child(panel(
+        // The right-hand column: the narrow boxes, stacked. `v_flex` leaves the
+        // cross axis alone, so these stretch to the column width.
+        let mut side = v_flex().flex_none().w_1_3().min_w_0().gap_2();
+        if self.shows("mem") {
+            side = side.child(panel(
                 "Memory",
-                panels::mem_panel(snap, &self.history, cols, scale, cx),
-                cx,
-            ))
-            .child(panel(
-                "Network",
-                panels::net_panel(snap, &self.history, self.selected_net(), cols, scale, cx),
-                cx,
-            ))
-            .child(panel(
-                "Disks",
-                panels::disk_panel(snap, &self.history, scale, cx),
-                cx,
-            ))
-            .child(panel(
-                "Processes",
-                panels::proc_panel(&self.proc_rows, scale, self.selected_pid, cx),
+                panels::mem_panel(snap, &self.history, scale, tick_secs, cx),
                 cx,
             ));
-
+        }
+        if self.shows("net") {
+            side = side.child(panel(
+                "Network",
+                panels::net_panel(
+                    snap,
+                    &self.history,
+                    self.selected_net(),
+                    scale,
+                    tick_secs,
+                    cx,
+                ),
+                cx,
+            ));
+        }
+        if self.shows("disks") {
+            side = side.child(panel(
+                "Disks",
+                panels::disk_panel(snap, &self.history, scale, tick_secs, cx),
+                cx,
+            ));
+        }
+        // The battery box exists only when there is a battery, which is the
+        // normal case on a desktop.
         if snap.and_then(|s| s.battery.as_ref()).is_some() {
-            grid = grid.child(panel("Battery", panels::battery_panel(snap, cx), cx));
+            side = side.child(panel("Battery", panels::battery_panel(snap, cx), cx));
+        }
+
+        // The top row: a wide CPU box beside the narrow stack.
+        //
+        // `items_stretch` is load-bearing. `h_flex()` is `.flex_row()
+        // .items_center()`, so without it every panel is centred on the cross
+        // axis at its own content height and the row floats in the middle of
+        // the window — which is exactly how it used to look.
+        let mut top = h_flex().items_stretch().flex_none().w_full().gap_2();
+        if self.shows("cpu") {
+            top = top.child(panel(
+                "CPU",
+                panels::cpu_panel(snap, &self.history, tick_secs, cx),
+                cx,
+            ));
+        }
+        top = top.child(side);
+
+        // The process list takes the height that is left over — and only that
+        // much, because its own contents are clipped and scrollable.
+        let mut lower = v_flex().flex_1().min_h_0().w_full();
+        if self.shows("proc") {
+            lower = lower.child(panel(
+                "Processes",
+                panels::proc_panel(
+                    &self.proc_rows,
+                    scale,
+                    self.selected_pid,
+                    self.proc_sort,
+                    self.proc_reversed,
+                    &self.proc_scroll,
+                    cx,
+                ),
+                cx,
+            ));
         }
 
         // The dialog layer sits above the grid and is a no-op when closed.
@@ -287,19 +350,147 @@ impl Render for AppView {
                     None => dialogs::message("that process has exited", cx).into_any_element(),
                 }
             }
+            Dialog::ProcessMenu(pid) => {
+                let heading = self
+                    .proc_rows
+                    .iter()
+                    .find(|p| p.pid == *pid)
+                    .map(|p| format!("{} · {}", p.pid, p.name))
+                    .unwrap_or_else(|| format!("process {pid}"));
+                dialogs::process_menu(*pid, &heading, cx).into_any_element()
+            }
         };
 
-        v_flex()
-            .size_full()
-            .bg(theme.background)
-            .child(grid)
-            .child(overlay)
-            .child(status_bar(snap))
-            // Without a tracked focus handle nothing in this element tree is
-            // focusable, and the key handlers below would never fire.
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::on_key_down))
+        // `window_border()` draws the theme-aware window edge. A `TitleBar`
+        // ELEMENT is what actually paints the header — setting only
+        // `TitleBar::window_options()` reserves the 34px strip and lets the
+        // compositor drag the window by it, but draws nothing there. That is
+        // why the app had no header at all.
+        window_border().child(
+            v_flex()
+                .size_full()
+                .bg(window_bg)
+                .child(self.title_bar(cx))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .p_2()
+                        .gap_2()
+                        .child(top)
+                        .child(lower),
+                )
+                .child(overlay)
+                .child(status_bar(snap))
+                // Without a tracked focus handle nothing in this element tree is
+                // focusable, and the key handlers below would never fire.
+                .track_focus(&self.focus_handle)
+                .on_key_down(cx.listener(Self::on_key_down)),
+        )
     }
+}
+
+impl AppView {
+    /// The window's title bar: the app's icon and name, then the buttons.
+    ///
+    /// Every action here is also a key — see `on_key_down` and
+    /// `actions::key_bindings`. A GUI needs both: the keys for muscle memory,
+    /// and visible controls, because a mouse user cannot discover a key map.
+    fn title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (muted, foreground, accent) = (theme.muted_foreground, theme.foreground, theme.accent);
+        TitleBar::new().child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .gap_3()
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            // `Activity` is a pulse line — it reads as "live
+                            // monitor" rather than a generic screen outline.
+                            // Size lives on the wrapper: the svg inherits both
+                            // size and colour from the text style.
+                            div()
+                                .flex_none()
+                                .size_4()
+                                .text_color(accent)
+                                .child(Icon::new(IconName::Activity)),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(gpui_kit::FontWeight(600.0))
+                                .text_color(foreground)
+                                .child("btop-gpui"),
+                        )
+                        .child(div().text_xs().text_color(muted).child(format!(
+                            "layout {}/{}",
+                            self.preset.number(),
+                            PRESETS.len(),
+                        ))),
+                )
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_1()
+                        .child(title_button(
+                            "layout",
+                            IconName::LayoutDashboard,
+                            cx.listener(|this, _e, _w, cx| this.cycle_preset(cx)),
+                        ))
+                        .child(title_button(
+                            self.theme_choice.label(),
+                            theme::icon_for(self.theme_choice),
+                            cx.listener(|this, _e, _w, cx| this.cycle_theme(cx)),
+                        ))
+                        .child(title_button(
+                            "options",
+                            IconName::Settings,
+                            cx.listener(|this, _e, _w, cx| this.show_dialog(Dialog::Options, cx)),
+                        ))
+                        .child(title_button(
+                            "help",
+                            IconName::Info,
+                            cx.listener(|this, _e, _w, cx| this.show_dialog(Dialog::Help, cx)),
+                        ))
+                        .child(title_button(
+                            "quit",
+                            IconName::LogOut,
+                            cx.listener(|this, _e, _w, cx| this.quit(cx)),
+                        )),
+                ),
+        )
+    }
+}
+
+/// One title-bar button: an icon, a caption, and a click.
+///
+/// The caption carries more weight than it looks — an icon-only bar is a
+/// guessing game for anyone who does not already know the app.
+fn title_button(
+    label: &'static str,
+    icon: IconName,
+    on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
+) -> impl IntoElement {
+    h_flex()
+        .id(ElementId::Name(SharedString::from(format!(
+            "title-{label}"
+        ))))
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py_0p5()
+        .rounded_md()
+        .cursor_pointer()
+        .child(div().flex_none().size_4().child(Icon::new(icon)))
+        .child(div().text_xs().child(label))
+        .on_click(on_click)
 }
 
 impl AppView {
@@ -312,38 +503,85 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
+        // Shift arrives as a modifier, not in `key`, so `t` and `Shift-T` are
+        // both reported as "t" here.
+        let shift = event.keystroke.modifiers.shift;
 
-        // `Esc` always closes, whatever is open.
-        if key == "escape" {
-            self.dialog = Dialog::None;
-            cx.notify();
-            return;
-        }
-        if key == "question-mark" {
-            self.dialog = match self.dialog {
-                Dialog::Help => Dialog::None,
-                _ => Dialog::Help,
-            };
-            cx.notify();
-            return;
+        // Keys that work whether or not a process is selected.
+        //
+        // The map follows btop's own wherever it can be checked against
+        // `btop_input.cpp`, so muscle memory carries over. Every one of these is
+        // also a clickable control: a GUI cannot make a keystroke the only route
+        // to anything.
+        match (key, shift) {
+            ("escape", _) => {
+                self.dialog = Dialog::None;
+                cx.notify();
+                return;
+            }
+            // btop uses `h`; `?` is the convention on this side. Both work.
+            ("question-mark", _) | ("h", false) => {
+                self.dialog = match self.dialog {
+                    Dialog::Help => Dialog::None,
+                    _ => Dialog::Help,
+                };
+                cx.notify();
+                return;
+            }
+            // btop's `m` opens its main menu; ours is the options dialog.
+            ("m", false) => {
+                self.show_dialog(Dialog::Options, cx);
+                return;
+            }
+            ("q", false) => {
+                // `q` must not quit out from under an open dialog — the user
+                // typing at a confirmation is not asking to close the app.
+                if matches!(self.dialog, Dialog::None) {
+                    self.quit(cx);
+                }
+                return;
+            }
+            ("p", false) => {
+                self.cycle_preset(cx);
+                return;
+            }
+            ("p", true) => {
+                self.preset = self.preset.prev();
+                cx.notify();
+                return;
+            }
+            // btop uses `e` for the tree. `t` is SIGTERM, so the old
+            // Shift-T binding was both wrong and in the way.
+            ("e", false) => {
+                self.toggle_tree(cx);
+                return;
+            }
+            ("r", false) => {
+                self.proc_reversed = !self.proc_reversed;
+                cx.notify();
+                return;
+            }
+            ("d", true) => {
+                self.cycle_theme(cx);
+                return;
+            }
+            _ => {}
         }
 
         // Everything below acts on a selected process.
         let Some(pid) = self.selected_pid else {
             return;
         };
-        let result = match key {
-            "t" => crate::ui::actions::signal_result(pid, nix::sys::signal::Signal::SIGTERM),
-            "k" => crate::ui::actions::signal_result(pid, nix::sys::signal::Signal::SIGKILL),
-            "+" | "=" => crate::ui::actions::nice_result(pid, 5),
-            "-" | "_" => crate::ui::actions::nice_result(pid, -5),
-            _ => return,
-        };
-        self.dialog = match result {
-            Ok(text) => Dialog::Message(text),
-            Err(text) => Dialog::Message(text),
-        };
-        cx.notify();
+        match (key, shift) {
+            // Destructive, so these ask first — the same path the context menu
+            // takes, so the guard cannot be bypassed by using the mouse.
+            ("t", false) => self.request_signal(pid, "SIGTERM", cx),
+            ("k", false) => self.request_signal(pid, "SIGKILL", cx),
+            ("enter", _) => self.open_detail(pid, cx),
+            ("+", _) | ("=", _) => self.apply_nice(pid, 5, cx),
+            ("-", _) | ("_", _) => self.apply_nice(pid, -5, cx),
+            _ => {}
+        }
     }
 
     // ---- imperative API used by tests and the options dialog ----
@@ -373,8 +611,99 @@ impl AppView {
         cx.notify();
     }
 
+    /// Set the sort column, or flip the direction if it is already active.
+    ///
+    /// One implementation behind three entry points: the `c` key, clicking a
+    /// sort pill, and the options dialog. Behaviour that can be reached four
+    /// ways must not be written four times.
+    pub fn sort_by(&mut self, column: ProcSort, cx: &mut Context<Self>) {
+        if self.proc_sort == column {
+            self.proc_reversed = !self.proc_reversed;
+        } else {
+            self.proc_sort = column;
+            // `proc_reversed == false` is *descending* — verified against the
+            // running app, not assumed. So "biggest first" for the cost columns
+            // means false, and the identifier columns want true.
+            self.proc_reversed = !matches!(
+                column,
+                ProcSort::Memory | ProcSort::CpuDirect | ProcSort::CpuLazy
+            );
+        }
+        cx.notify();
+    }
+
+    /// Open the per-process detail sheet. Bound to `Enter` and to a double click.
+    pub fn open_detail(&mut self, pid: i32, cx: &mut Context<Self>) {
+        self.selected_pid = Some(pid);
+        self.dialog = Dialog::Detail(pid);
+        cx.notify();
+    }
+
+    /// Open the right-click menu for a process row.
+    pub fn open_process_menu(&mut self, pid: i32, cx: &mut Context<Self>) {
+        self.selected_pid = Some(pid);
+        self.dialog = Dialog::ProcessMenu(pid);
+        cx.notify();
+    }
+
+    /// Ask before signalling a process.
+    ///
+    /// Both `t`/`k` and the context menu land here, so the destructive path has
+    /// a single implementation and a single guard. btop confirms too.
+    pub fn request_signal(&mut self, pid: i32, signal: &'static str, cx: &mut Context<Self>) {
+        self.dialog = Dialog::ConfirmKill(pid, signal);
+        cx.notify();
+    }
+
+    /// Send the confirmed signal and report the outcome.
+    pub fn apply_signal(&mut self, pid: i32, signal: &'static str, cx: &mut Context<Self>) {
+        use crate::ui::actions::signal_result;
+        let result = match signal {
+            "SIGKILL" => signal_result(pid, nix::sys::signal::Signal::SIGKILL),
+            _ => signal_result(pid, nix::sys::signal::Signal::SIGTERM),
+        };
+        // `EPERM` is the common failure and it is not an app error — the
+        // process just belongs to someone else. Either way the user is told.
+        self.dialog = Dialog::Message(match result {
+            Ok(text) => text,
+            Err(text) => text,
+        });
+        cx.notify();
+    }
+
+    /// Change a process' nice value, reporting the outcome.
+    pub fn apply_nice(&mut self, pid: i32, delta: i32, cx: &mut Context<Self>) {
+        use crate::ui::actions::nice_result;
+        self.dialog = Dialog::Message(match nice_result(pid, delta) {
+            Ok(text) => text,
+            Err(text) => text,
+        });
+        cx.notify();
+    }
+
+    /// Quit. Bound to `q` and to the title-bar button.
+    pub fn quit(&mut self, cx: &mut Context<Self>) {
+        cx.quit();
+    }
+
     pub fn toggle_tree(&mut self, cx: &mut Context<Self>) {
         self.proc_tree = !self.proc_tree;
+        cx.notify();
+    }
+
+    /// Advance the theme: System -> Dark -> Light -> System.
+    ///
+    /// The choice is resolved once and applied globally — `Theme::change`
+    /// restyles every panel that reads `cx.theme()` — then written back to the
+    /// config so it survives a restart. A failed save is logged once and is not
+    /// worth interrupting the user for; the theme has already changed.
+    pub fn cycle_theme(&mut self, cx: &mut Context<Self>) {
+        self.theme_choice = self.theme_choice.next();
+        theme::set(self.theme_choice.resolve(), cx);
+        self.config.set("theme_mode", self.theme_choice.label());
+        if self.config.save(&crate::config::config_path()).is_err() {
+            crate::logger::once("theme-save-failed", "could not save the theme choice");
+        }
         cx.notify();
     }
 
@@ -391,10 +720,40 @@ impl AppView {
     }
 }
 
-/// The height the process list is allowed to grow to before it scrolls.
-/// A full-height column inside an `h_flex` row needs an explicit height or it
-/// takes its content height and overflows equally top and bottom.
-pub fn proc_list_height(cx: &App) -> gpui_kit::Pixels {
-    let _ = cx;
-    px(320.)
+/// `net_iface = Auto` (or an empty value) means "whichever interface the
+/// collector ranked busiest"; anything else is a name to pin.
+///
+/// Split out of `AppView` so it can be tested without a window.
+pub fn configured_iface(cfg: &Config) -> Option<String> {
+    let value = cfg.str("net_iface");
+    let value = value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("auto") {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_and_blank_mean_no_pin() {
+        for value in ["Auto", "auto", "  AUTO  ", ""] {
+            let cfg = Config::parse(&format!("net_iface = {value}\n"));
+            assert!(
+                configured_iface(&cfg).is_none(),
+                "{value:?} should not pin an interface"
+            );
+        }
+    }
+
+    #[test]
+    fn a_named_interface_is_pinned_and_trimmed() {
+        let cfg = Config::parse("net_iface = wlan0\n");
+        assert_eq!(configured_iface(&cfg).as_deref(), Some("wlan0"));
+        let cfg = Config::parse("net_iface =   enp0s3  \n");
+        assert_eq!(configured_iface(&cfg).as_deref(), Some("enp0s3"));
+    }
 }

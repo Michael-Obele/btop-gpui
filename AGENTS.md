@@ -302,6 +302,44 @@ window, cx)` switches globally. **Never hard-code a colour or a radius** —
   during render schedules another frame and spins the UI thread forever.
 - **`ElementId`s must be derived from stable domain identity** (pid, mount
   name), never from a list index, or keyed state gets mixed up on reorder.
+- **`component::IconName` is a compatibility SUBSET.** The full Lucide set is
+  `gpui_kit::assets::IconName` — `Activity`, `SunMoon`, `ArrowUpDown`, `Skull`
+  and most others only exist there. `Icon::new` accepts anything implementing
+  `IconNamed`, so `Icon::new(gpui_kit::assets::IconName::Activity)` works.
+- **`window_border()` lives at `gpui_kit::component::window_border`**, not at the
+  crate root.
+- **A `TitleBar` must be *rendered*, not just configured.** `TitleBar::window_options()`
+  reserves the 34px strip and lets the compositor drag by it, but nothing is
+  painted there unless `TitleBar::new().child(..)` is in the element tree. It
+  implements `ParentElement`.
+- **`WindowOptions.app_id`** is what Wayland/GNOME matches against the desktop
+  file's `StartupWMClass` to resolve the window's name and icon. Setting only the
+  window title leaves the taskbar showing "Unknown".
+- **Charts are interactive by default** — `.interactive(false)` removes the
+  hitbox and with it the crosshair and tooltip. `tooltip_value` is
+  `Fn(&T, f64)` on `LineChart` but `Fn(&T, usize, f64)` on Area/Bar/Radar/
+  Candlestick (the extra arg is the series index). `y_tick_format` is
+  `Fn(f64) -> impl Into<SharedString>`. **`y_padding` defaults to 10px of
+  headroom**, which is why a pinned `y_domain(0, 100)` labels its top tick 112.2.
+- **Return a concrete `Div`, not `impl IntoElement`, from anything a caller's
+  `&mut Context` is passed to.** An opaque return type keeps the caller's borrow
+  alive, and the next `cx` use fails with E0502. `chrome.rs` documents this.
+- **Read `cx.theme()` into `Copy` locals before any mutable `cx` use** in the
+  same function, for the same reason.
+- **`.children(iter.map(|x| f(x, cx)))` does not compile** when `cx` is
+  `&mut Context` — "captured variable cannot escape `FnMut` closure body". Use a
+  `for` loop so each row reborrows.
+- **`ThemeMode` has no `System` variant**, `Theme::change` ignores its `window`
+  argument (it is global), and **gpui-pre has no Linux colour-scheme detection** —
+  `window.appearance()` never consults the desktop. Read
+  `gsettings get org.gnome.desktop.interface color-scheme` instead.
+- **`ClickEvent` is an enum** (`Mouse`/`Keyboard`), so `click_count` is not on it.
+  Use `on_mouse_down(button, ..)` and read `MouseDownEvent::click_count`, or
+  match the enum. `hover`'s closure takes `StyleRefinement` **by value**, so
+  `.hover(|s| s.bg(color))` works.
+- **`Progress` colours itself from the theme's `progress_bar` token**, which is
+  near-black in the light theme; pass `.color(..)` explicitly. `cx.reduce_motion()`
+  exists if motion ever needs respecting.
 
 ---
 
