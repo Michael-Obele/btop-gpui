@@ -13,9 +13,11 @@
 //! That split is what makes `cargo test` meaningful: the parsers can be checked
 //! against captured `/proc` fixtures on a machine with no display at all.
 
+pub mod app;
 pub mod collect;
 pub mod config;
 pub mod format;
 pub mod history;
 pub mod logger;
 pub mod model;
+pub mod ui;

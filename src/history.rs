@@ -100,6 +100,14 @@ pub struct History {
 /// CPUs, `width * 2` per core would be a lot of memory for data nobody reads.
 pub const PER_CORE_CAP: usize = 40;
 
+impl Default for History {
+    /// An empty history. `mem::take` in `pull()` needs this; the rings are
+    /// replaced wholesale on the next tick anyway.
+    fn default() -> Self {
+        Self::new(120)
+    }
+}
+
 impl History {
     pub fn new(cols: usize) -> Self {
         let cap = clamp_columns(cols) * 2;
@@ -171,6 +179,52 @@ impl History {
     ) -> &'a mut Ring<f32> {
         let cap = clamp_columns(cols) * 2;
         map.entry(key.to_string()).or_insert_with(|| Ring::new(cap))
+    }
+
+    /// Fold one snapshot into the graphs. Called **once per tick**, never from
+    /// `render()`: this is where the allocation happens.
+    ///
+    /// The per-core and per-field rings are grown here rather than at startup
+    /// so a CPU that appears later still gets a trace.
+    pub fn push_snapshot(&mut self, snapshot: &crate::model::Snapshot, cols: usize) {
+        let cap = clamp_columns(cols) * 2;
+
+        self.cpu_total.push(snapshot.cpu.total_percent);
+        self.ensure_fields(snapshot.cpu.fields_percent.len(), cols);
+        for (ring, value) in self.cpu_fields.iter_mut().zip(&snapshot.cpu.fields_percent) {
+            ring.push(*value);
+        }
+
+        self.ensure_cores(snapshot.cpu.cores.len());
+        for (ring, core) in self.cpu_cores.iter_mut().zip(&snapshot.cpu.cores) {
+            ring.push(core.percent);
+        }
+        for (ring, core) in self.cpu_temps.iter_mut().zip(&snapshot.cpu.cores) {
+            // `None` is skipped rather than pushed as 0, so a missing sensor
+            // does not read as an idling core.
+            if let Some(c) = core.temp_c {
+                ring.push(c);
+            }
+        }
+
+        self.mem_used.push(snapshot.mem.used_percent);
+        self.swap_used.push(snapshot.mem.swap_percent);
+
+        for net in &snapshot.nets {
+            Self::ring_for(&mut self.net_down, &net.name, cols)
+                .push(net.download_bytes_per_sec as f32);
+            Self::ring_for(&mut self.net_up, &net.name, cols)
+                .push(net.upload_bytes_per_sec as f32);
+        }
+        for disk in &snapshot.disks {
+            Self::ring_for(&mut self.disk_read, &disk.name, cols)
+                .push(disk.read_bytes_per_sec as f32);
+            Self::ring_for(&mut self.disk_write, &disk.name, cols)
+                .push(disk.write_bytes_per_sec as f32);
+        }
+
+        // Keep the capacities honest if the window was resized.
+        debug_assert!(self.cpu_total.capacity() >= cap || self.cpu_total.len() <= cap);
     }
 }
 
