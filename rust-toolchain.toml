@@ -1,0 +1,4 @@
+[toolchain]
+# Zed builds on 1.98.1 and gpui-kit needs >= 1.92. `stable` is what we install;
+# the resolved minimum is asserted in Cargo.toml via `rust-version`.
+channel = "stable"

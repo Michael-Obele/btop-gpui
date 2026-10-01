@@ -1,0 +1,35 @@
+[package]
+name = "btop-gpui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+description = "A native desktop system monitor in the spirit of btop, built with GPUI"
+
+# A library target so the data layer is testable with no window and no GPU.
+# `src/main.rs` is a thin binary over it.
+[lib]
+name = "btop_gpui"
+path = "src/lib.rs"
+
+[dependencies]
+# UI: ONE dependency. It re-exports GPUI (under the name `gpui`) and pins the
+# `gpui-pre` snapshot exactly. Never add gpui/gpui-pre/gpui_platform yourself:
+# crates.io `gpui` is frozen at 0.2.2 and does not compile (zed#46966).
+gpui-kit = "=0.7.0"
+
+# Data layer. Everything is read from /proc and /sys directly so the numbers are
+# btop-identical; see docs/03-data-layer.md for why sysinfo is deliberately absent.
+# `net` is required for `nix::ifaddrs`; `process` for `kill`/`getpid`.
+nix = { version = "0.31", features = ["fs", "process", "resource", "signal", "user", "net"] }
+libc = "0.2"
+regex = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+# NOTE: `panic = "abort"` is deliberately NOT set. docs/02-architecture.md §7
+# wraps each collector tick in `catch_unwind` so a bad /sys read on one tick
+# cannot kill the process; abort would remove that safety net.
