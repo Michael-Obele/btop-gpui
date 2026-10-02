@@ -340,7 +340,7 @@ window, cx)` switches globally. **Never hard-code a colour or a radius** —
 - **`Progress` colours itself from the theme's `progress_bar` token**, which is
   near-black in the light theme; pass `.color(..)` explicitly. `cx.reduce_motion()`
   exists if motion ever needs respecting.
-- **`Theme::accent` is a *surface*, not ink.** The crate's own doc comment says
+- **`Theme::accent` is a _surface_, not ink.** The crate's own doc comment says
   "Used for accents such as hover background on MenuItem, ListItem"; its matching
   text colour is `accent_foreground`. Used as a text colour, `accent` is
   `neutral-800` (#262626) on the dark theme and `neutral-100` (near-white) on the
