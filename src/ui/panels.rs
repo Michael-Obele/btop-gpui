@@ -65,7 +65,12 @@ pub fn cpu_panel(snapshot: Option<&Snapshot>, history: &History, tick_secs: f32,
         )
         // Height goes on the PARENT: the chart element always requests
         // `Size::full()` and takes no size of its own.
-        .child(div().h(px(110.)).child(chart::percent_chart(
+        //
+        // `flex_1` + `min_h` rather than a fixed height, so that when
+        // `items_stretch` on the row hands this panel more room than its
+        // contents asked for, the room goes into the graph instead of becoming a
+        // band of blank pixels under the per-core grid.
+        .child(div().flex_1().min_h(px(110.)).child(chart::percent_chart(
             "cpu-total",
             &history.cpu_total,
             theme::stroke(cx, 0),
@@ -225,7 +230,7 @@ pub fn mem_panel(
                         .child(format::percent(s.mem.used_percent, 0)),
                 ),
         )
-        .child(div().h(px(80.)).child(chart::percent_chart(
+        .child(div().flex_1().min_h(px(80.)).child(chart::percent_chart(
             "mem-used",
             &history.mem_used,
             theme::stroke(cx, 1),
@@ -336,7 +341,7 @@ pub fn net_panel(
         history.net_down.get(&net.name),
         history.net_up.get(&net.name),
     ) {
-        body = body.child(div().h(px(80.)).child(chart::dual_chart(
+        body = body.child(div().flex_1().min_h(px(80.)).child(chart::dual_chart(
             "net-rw",
             d,
             u,
@@ -412,7 +417,7 @@ pub fn disk_panel(
             history.disk_write.get(&disk.name),
         )
     {
-        body = body.child(div().h(px(70.)).child(chart::dual_chart(
+        body = body.child(div().flex_1().min_h(px(70.)).child(chart::dual_chart(
             "disk-rw",
             r,
             w,
@@ -437,7 +442,11 @@ pub fn battery_panel(snapshot: Option<&Snapshot>, cx: &App) -> Div {
         return panel_body().child(div());
     };
     let theme = cx.theme();
+    // Centred: the box is stretched to the process list's height because the row
+    // is `items_stretch`, and a battery is three lines at most. Centring makes
+    // it read as a tile that owns its box rather than a box with a hole in it.
     panel_body()
+        .justify_center()
         .child(
             h_flex()
                 .justify_between()
@@ -639,13 +648,15 @@ fn sort_button(
         (theme.muted_foreground, theme.border)
     };
     let fill = theme.accent;
+    // Read before the listener below borrows `cx` mutably.
+    let radius = theme.radius;
 
     div()
         .id(ElementId::Name(SharedString::from(format!("sort-{label}"))))
         .flex_none()
         .px_2()
         .py_0p5()
-        .rounded_md()
+        .rounded(radius)
         .border_1()
         .border_color(border)
         .when(active, move |el| el.bg(fill))
@@ -690,6 +701,9 @@ fn proc_row(
     // click listeners, so the theme borrow has to be over by then.
     let (muted, foreground, accent) = (theme.muted_foreground, theme.foreground, theme.accent);
     let (hover_bg, selected_bg) = (accent.opacity(0.10), accent.opacity(0.18));
+    // Half the theme radius: a full-radius pill on a dense table row reads as a
+    // button rather than as the row it is.
+    let radius = theme.radius / 2.;
 
     h_flex()
         .id(ElementId::Name(SharedString::from(format!(
@@ -698,7 +712,7 @@ fn proc_row(
         .px_1()
         .gap_2()
         .items_center()
-        .rounded_sm()
+        .rounded(radius)
         .cursor_pointer()
         .when(is_selected, |el| el.bg(selected_bg))
         .hover(move |s| s.bg(hover_bg))

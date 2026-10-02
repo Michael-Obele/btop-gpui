@@ -24,7 +24,10 @@ pub fn panel_frame(title: &str, cx: &App) -> Div {
         .min_h_0()
         .min_w_0()
         .border_1()
-        .rounded_md()
+        // From the theme rather than `rounded_md()`: a hardcoded 6px corner
+        // survives `Theme::radius` being set to zero, which leaves every panel
+        // rounded in a UI that is square everywhere else (AGENTS.md §6).
+        .rounded(theme.radius)
         .border_color(theme.border)
         .bg(theme.popover)
         .overflow_hidden()
@@ -62,6 +65,10 @@ pub fn panel(title: &str, body: impl IntoElement, cx: &App) -> Div {
 /// the height of the tallest neighbour — so the shorter boxes pad themselves out
 /// with blank pixels. Sizing to content means the column is exactly as tall as
 /// its boxes and nothing stretches to fill a gap it did not create.
+///
+/// In the top row this is **load-bearing, not cosmetic**: `flex_1` is
+/// `flex-basis: 0`, so that column is what gives the row its height. Make every
+/// panel in it `flex_1` and the row's intrinsic height becomes zero.
 pub fn panel_auto(title: &str, body: impl IntoElement, cx: &App) -> Div {
     panel_frame(title, cx)
         .flex_none()

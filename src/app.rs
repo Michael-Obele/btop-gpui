@@ -307,12 +307,17 @@ impl Render for AppView {
         // back a point is instead of being handed a tick index.
         let tick_secs = self.config.update_interval().as_secs_f32();
 
-        // The narrow boxes are split across the two rows so the grid balances.
+        // The narrow read-outs sit in a 1/3 column beside the CPU graph, split
+        // across the two rows so the grid balances.
         //
-        // Stacking all of them beside the CPU made that column taller than the
-        // CPU box, and `items_stretch` then padded the CPU panel with ~160px of
-        // empty space. Three beside the CPU and one beside the process list puts
-        // the two top columns at a comparable height, so neither has to stretch.
+        // They are `panel_auto` — `flex_none`, i.e. content height — and that is
+        // load-bearing rather than cosmetic: this column is what gives the top
+        // row its height. `panel()` is `flex_1`, which is `flex-basis: 0`, so a
+        // column of `flex_1` panels has an intrinsic height of zero and the
+        // whole row collapses. The CPU panel *is* `flex_1`, so it stretches to
+        // whatever height this column asks for; the room that used to show up as
+        // blank pixels under its charts now goes into the main graph instead
+        // (see `cpu_panel`).
         let mut side = v_flex().flex_none().w_1_3().min_w_0().gap_2();
         if self.shows("mem") {
             side = side.child(panel_auto(
@@ -355,8 +360,8 @@ impl Render for AppView {
 
         // The process list takes the height that is left over — and only that
         // much, because its own contents are clipped and scrollable. The battery
-        // box sits beside it: it is the one box with no reason to be tall, and
-        // here its height is set by the list rather than by a stack of siblings.
+        // box sits beside it: it is the one box with no reason to be tall, so
+        // its body centres itself in whatever height the list sets.
         let mut lower = h_flex().items_stretch().flex_1().min_h_0().w_full().gap_2();
         if self.shows("proc") {
             let controls = panels::ProcControls {
@@ -425,28 +430,45 @@ impl Render for AppView {
         // `TitleBar::window_options()` reserves the 34px strip and lets the
         // compositor drag the window by it, but draws nothing there. That is
         // why the app had no header at all.
-        window_border().child(
-            v_flex()
-                .size_full()
-                .bg(window_bg)
-                .child(self.title_bar(cx))
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_h_0()
-                        .w_full()
-                        .p_2()
-                        .gap_2()
-                        .child(top)
-                        .child(lower),
-                )
-                .child(overlay)
-                .child(status_bar(snap))
-                // Without a tracked focus handle nothing in this element tree is
-                // focusable, and the key handlers below would never fire.
-                .track_focus(&self.focus_handle)
-                .on_key_down(cx.listener(Self::on_key_down)),
-        )
+        //
+        // The shadow is switched off, and this is what stops the app looking
+        // like it is sitting inside a container. On Linux `window_border()`
+        // reserves a **20px** transparent margin on every side for a drop
+        // shadow (`SHADOW_SIZE` in `gpui-component/src/window_border.rs`) and
+        // reports the visible frame as inset by it, so the desktop showed
+        // through a 20px band all the way round the window. A system monitor is
+        // a full-bleed surface — btop fills its terminal edge to edge, not a
+        // card floating in the middle of it — so here the window bounds are the
+        // app bounds.
+        //
+        // The resize bands are centred on the frame edge, so with no inset half
+        // of each band would fall outside the window; 6px keeps a usable grab
+        // strip inside the flush edge.
+        window_border()
+            .shadow_size(gpui_kit::px(0.))
+            .resize_hit_size(gpui_kit::px(6.))
+            .child(
+                v_flex()
+                    .size_full()
+                    .bg(window_bg)
+                    .child(self.title_bar(cx))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
+                            .p_2()
+                            .gap_2()
+                            .child(top)
+                            .child(lower),
+                    )
+                    .child(overlay)
+                    .child(status_bar(snap))
+                    // Without a tracked focus handle nothing in this element tree is
+                    // focusable, and the key handlers below would never fire.
+                    .track_focus(&self.focus_handle)
+                    .on_key_down(cx.listener(Self::on_key_down)),
+            )
     }
 }
 
@@ -460,10 +482,14 @@ impl AppView {
         let theme = cx.theme();
         // The icon gets a real stroke colour, not `accent`: that is a surface
         // token, and using it as ink gives near-black on the dark theme.
-        let (muted, foreground, brand) = (
+        //
+        // Every value is copied out here, before the `cx.listener` calls below,
+        // so the theme borrow is over before `cx` is borrowed mutably.
+        let (muted, foreground, brand, radius) = (
             theme.muted_foreground,
             theme.foreground,
             theme::stroke(cx, 0),
+            theme.radius,
         );
         TitleBar::new().child(
             h_flex()
@@ -504,26 +530,31 @@ impl AppView {
                         .items_center()
                         .gap_1()
                         .child(title_button(
+                            radius,
                             "layout",
                             IconName::LayoutDashboard,
                             cx.listener(|this, _e, _w, cx| this.cycle_preset(cx)),
                         ))
                         .child(title_button(
+                            radius,
                             self.theme_choice.label(),
                             theme::icon_for(self.theme_choice),
                             cx.listener(|this, _e, _w, cx| this.cycle_theme(cx)),
                         ))
                         .child(title_button(
+                            radius,
                             "options",
                             IconName::Settings,
                             cx.listener(|this, _e, _w, cx| this.show_dialog(Dialog::Options, cx)),
                         ))
                         .child(title_button(
+                            radius,
                             "help",
                             IconName::Info,
                             cx.listener(|this, _e, _w, cx| this.show_dialog(Dialog::Help, cx)),
                         ))
                         .child(title_button(
+                            radius,
                             "quit",
                             IconName::LogOut,
                             cx.listener(|this, _e, _w, cx| this.quit(cx)),
@@ -538,6 +569,7 @@ impl AppView {
 /// The caption carries more weight than it looks — an icon-only bar is a
 /// guessing game for anyone who does not already know the app.
 fn title_button(
+    radius: gpui_kit::Pixels,
     label: &'static str,
     icon: IconName,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
@@ -551,7 +583,10 @@ fn title_button(
         .gap_1()
         .px_2()
         .py_0p5()
-        .rounded_md()
+        // The theme's radius, not `rounded_md()`: a hardcoded 6px survives
+        // `Theme::radius` being set to zero, which leaves these pills rounded in
+        // a UI that is square everywhere else.
+        .rounded(radius)
         .cursor_pointer()
         .child(div().flex_none().size_4().child(Icon::new(icon)))
         .child(div().text_xs().child(label))

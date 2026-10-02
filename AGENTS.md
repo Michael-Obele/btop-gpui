@@ -285,6 +285,24 @@ the ones that cost a day each.
 window, cx)` switches globally. **Never hard-code a colour or a radius** —
   it breaks custom themes. Use tokens; prefer
   `ThemeStyled::rounded_full_style(cx)` over `rounded_full()`.
+- **`window_border()` insets the whole app by 20px on Linux.** `SHADOW_SIZE` is
+  `px(20.0)` on Linux and `px(0.0)` elsewhere
+  (`gpui-component-0.7.0/src/window_border.rs`); the border element pads its
+  content by it, paints that band transparent (`set_client_inset`) and reports it
+  to the compositor as the client inset. A default-options window therefore
+  shows a 20px gutter on every side and the app reads as content sitting inside
+  a container, with the desktop visible through it. `.shadow_size(px(0.))` makes
+  the window bounds the app bounds. The resize bands are **centred on the frame
+  edge**, so with no inset half of each band falls outside the window — widen
+  them (`.resize_hit_size(..)`) when the shadow is zero.
+- **`flex_1()` is `flex: 1 1 0%` — `flex_basis: relative(0.)`, not `auto`.**
+  (`gpui-pre-0.3.7/src/styled.rs:181`.) Combined with the `min_h_0()` that
+  disables the content-based automatic minimum, a column of `flex_1` panels has
+  an **intrinsic height of zero**: a `flex_none` row that is sized by its content
+  collapses to nothing. Every content-sized row must keep at least one
+  `flex_none` child (`ui::chrome::panel_auto`) to have any height at all.
+  `flex_auto()` is the `1 1 auto` variant; the chunk suffix ramp has no `flex_2`,
+  so weighting is `.flex_grow(n)`.
 - **Dialogs are application state here, not an imperative API.**
   `AppView::dialog` is an enum and a dialog renders when its variant is active;
   closing sets it back to `None`. gpui-kit _does_ offer an imperative
