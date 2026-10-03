@@ -64,7 +64,7 @@ renders `—`, `kill` on a foreign process surfaces EPERM without dying.
 
 ```bash
 cargo run                    # debug build + window
-cargo run --release          # slow: lto = "thin", codegen-units = 1 on ~100 MB
+cargo run --release          # slow: lto = "thin", codegen-units = 1 on ~33 MB
 cargo build --bin btop-gpui  # binary only, no window
 ```
 
@@ -75,7 +75,7 @@ Expect several minutes.
 
 Builds on this machine are a metered resource. A default `cargo build` fans out
 to 8 parallel `rustc` processes, pins every core, and throttles for minutes.
-`target/` is already 6.9 GB.
+`target/` is already several GB.
 
 Create `.cargo/config.toml` (it does not exist yet):
 
@@ -90,11 +90,11 @@ Then pick the cheapest command that proves the change:
 | -------------------------------------- | --------------------------------------------------- | --------------------------------------------------- |
 | `cargo build`                          | `cargo check`                                       | Type-checks without codegen. Several times cheaper. |
 | `cargo build` (to check tests compile) | `cargo check --all-targets`                         | Same, plus test/example targets.                    |
-| `cargo test`                           | `cargo test --lib`                                  | Avoids building the ~100 MB GPUI binary.            |
+| `cargo test`                           | `cargo test --lib`                                  | Avoids building the ~33 MB GPUI binary.             |
 | `cargo clippy --all-targets`           | `cargo check -j 2` when the machine is already busy | Halves the thermal load.                            |
 
 Hard rules: **one cargo command at a time** (two contend for the `target/` lock),
-never `cargo clean` without asking (it discards a 6.9 GB warm cache), never edit
+never `cargo clean` without asking (it discards a multi-GB warm cache), never edit
 dependency versions casually, and ask before any `--release` build.
 
 ---
@@ -108,7 +108,7 @@ cargo test --lib
 cargo check --all-targets
 ```
 
-`cargo test --lib` must report **108 passed / 0 failed**. A test command that
+`cargo test --lib` must report **126 passed / 0 failed**. A test command that
 discovers zero tests exits 0 — treat "0 tests run" as a failure, not a pass.
 
 Run these at the end of a task, not in a loop.
@@ -241,7 +241,7 @@ Verified on 2026-10-01 with rustc 1.97.1:
 
 | Command                                     | Result                                                      |
 | ------------------------------------------- | ----------------------------------------------------------- |
-| `cargo test --lib`                          | **108 passed, 0 failed**                                    |
+| `cargo test --lib`                          | **126 passed, 0 failed**                                    |
 | `cargo clippy --all-targets -- -D warnings` | clean                                                       |
 | `cargo check --all-targets`                 | clean                                                       |
 | `cargo fmt --all --check`                   | **fails** — `src/app.rs` import order and a let-chain brace |

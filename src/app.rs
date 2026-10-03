@@ -43,7 +43,7 @@ use crate::collect::{self, Shared};
 use crate::config::Config;
 use crate::history::{History, clamp_columns};
 use crate::model::{ProcSnapshot, Snapshot};
-use crate::ui::chrome::{PRESETS, Preset, panel, panel_auto, status_bar};
+use crate::ui::chrome::{PRESETS, PanelBox, Preset, panel, panel_auto, status_bar};
 use crate::ui::theme::{self, ThemeChoice};
 use crate::ui::{dialogs, panels};
 
@@ -319,16 +319,16 @@ impl Render for AppView {
         // blank pixels under its charts now goes into the main graph instead
         // (see `cpu_panel`).
         let mut side = v_flex().flex_none().w_1_3().min_w_0().gap_2();
-        if self.shows("mem") {
+        if self.shows(PanelBox::Mem) {
             side = side.child(panel_auto(
-                "Memory",
+                PanelBox::Mem.title(),
                 panels::mem_panel(snap, &self.history, scale, tick_secs, cx),
                 cx,
             ));
         }
-        if self.shows("net") {
+        if self.shows(PanelBox::Net) {
             side = side.child(panel_auto(
-                "Network",
+                PanelBox::Net.title(),
                 panels::net_panel(
                     snap,
                     &self.history,
@@ -340,18 +340,18 @@ impl Render for AppView {
                 cx,
             ));
         }
-        if self.shows("disks") {
+        if self.shows(PanelBox::Disk) {
             side = side.child(panel_auto(
-                "Disks",
+                PanelBox::Disk.title(),
                 panels::disk_panel(snap, &self.history, scale, tick_secs, cx),
                 cx,
             ));
         }
 
         let mut top = h_flex().items_stretch().flex_none().w_full().gap_2();
-        if self.shows("cpu") {
+        if self.shows(PanelBox::Cpu) {
             top = top.child(panel(
-                "CPU",
+                PanelBox::Cpu.title(),
                 panels::cpu_panel(snap, &self.history, tick_secs, cx),
                 cx,
             ));
@@ -363,7 +363,7 @@ impl Render for AppView {
         // box sits beside it: it is the one box with no reason to be tall, so
         // its body centres itself in whatever height the list sets.
         let mut lower = h_flex().items_stretch().flex_1().min_h_0().w_full().gap_2();
-        if self.shows("proc") {
+        if self.shows(PanelBox::Proc) {
             let controls = panels::ProcControls {
                 sort: self.proc_sort,
                 reversed: self.proc_reversed,
@@ -371,7 +371,7 @@ impl Render for AppView {
                 editing: self.filter_editing,
             };
             lower = lower.child(panel(
-                "Processes",
+                PanelBox::Proc.title(),
                 panels::proc_panel(
                     &self.proc_rows,
                     scale,
@@ -383,9 +383,12 @@ impl Render for AppView {
                 cx,
             ));
         }
-        // The battery box exists only when there is a battery, which is the
-        // normal case on a desktop.
-        if snap.and_then(|s| s.battery.as_ref()).is_some() {
+        // The battery box exists only when the user has asked for it AND there
+        // is a battery to show, which is never the case on a desktop. The
+        // `show_battery` half used to be missing, so the Options switch was
+        // decorative: it toggled, persisted, and changed nothing.
+        let battery_present = snap.and_then(|s| s.battery.as_ref()).is_some();
+        if self.config.bool("show_battery") && battery_present {
             lower = lower.child(
                 panel_auto("Battery", panels::battery_panel(snap, cx), cx).w(gpui_kit::px(300.)),
             );
@@ -1107,8 +1110,24 @@ impl AppView {
     }
 
     /// Whether a given panel is on screen in the current preset.
-    pub fn shows(&self, name: &str) -> bool {
-        self.preset.contains(name)
+    pub fn shows(&self, panel_box: PanelBox) -> bool {
+        // The options dialog can also switch a box off independently of the
+        // preset, so both have to agree for it to be drawn.
+        box_enabled(&self.config, panel_box) && self.preset.contains(panel_box)
+    }
+}
+
+/// Whether a box is switched on, independently of the layout preset.
+///
+/// `show_battery` and `show_disks` are the two booleans the Options dialog
+/// exposes for boxes that are not always wanted. Both were toggled and
+/// persisted but never consulted when rendering, so the switches did nothing.
+///
+/// Split out of `AppView` so it can be tested without a window.
+pub fn box_enabled(cfg: &Config, panel_box: PanelBox) -> bool {
+    match panel_box {
+        PanelBox::Disk => cfg.bool("show_disks"),
+        _ => true,
     }
 }
 
@@ -1147,5 +1166,29 @@ mod tests {
         assert_eq!(configured_iface(&cfg).as_deref(), Some("wlan0"));
         let cfg = Config::parse("net_iface =   enp0s3  \n");
         assert_eq!(configured_iface(&cfg).as_deref(), Some("enp0s3"));
+    }
+
+    /// The regression guard for the decorative Options switches: `show_disks`
+    /// was written and saved but never read, so the dialog row did nothing.
+    #[test]
+    fn the_disk_switch_actually_gates_the_disk_box() {
+        let on = Config::parse("show_disks = True\n");
+        assert!(box_enabled(&on, PanelBox::Disk));
+        let off = Config::parse("show_disks = False\n");
+        assert!(!box_enabled(&off, PanelBox::Disk));
+    }
+
+    /// Only the disks box has a switch; the rest are always available, because a
+    /// preset that cannot show CPU is not a monitor.
+    #[test]
+    fn the_other_boxes_have_no_switch_and_stay_available() {
+        let cfg = Config::parse("show_disks = False\n");
+        for panel_box in [PanelBox::Cpu, PanelBox::Mem, PanelBox::Net, PanelBox::Proc] {
+            assert!(
+                box_enabled(&cfg, panel_box),
+                "{} should never be switchable off",
+                panel_box.as_str()
+            );
+        }
     }
 }

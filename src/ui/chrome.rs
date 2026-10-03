@@ -106,15 +106,80 @@ pub fn status_bar(snapshot: Option<&Snapshot>) -> impl IntoElement {
     StatusBar::new().left(text).right("btop-gpui")
 }
 
-/// One of btop's layout presets, as a list of box names in reading order.
+/// One panel the window can show.
+///
+/// This is an enum rather than a `&str` because the two used to disagree: the
+/// presets spelled the disks box `"disk"` while `AppView::render` asked for
+/// `"disks"`, so `Preset::contains` never matched and the panel silently never
+/// rendered in any of the four layouts. Strings made that a silent no-op; an
+/// enum makes it a compile error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Preset(pub &'static [&'static str]);
+pub enum PanelBox {
+    Cpu,
+    Mem,
+    Net,
+    Disk,
+    Proc,
+}
+
+impl PanelBox {
+    /// Every box, in the order the options dialog lists them.
+    pub const ALL: [PanelBox; 5] = [
+        PanelBox::Cpu,
+        PanelBox::Mem,
+        PanelBox::Net,
+        PanelBox::Disk,
+        PanelBox::Proc,
+    ];
+
+    /// The lowercase name used in config values and log lines.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PanelBox::Cpu => "cpu",
+            PanelBox::Mem => "mem",
+            PanelBox::Net => "net",
+            PanelBox::Disk => "disk",
+            PanelBox::Proc => "proc",
+        }
+    }
+
+    /// The title drawn on the panel's frame.
+    pub fn title(self) -> &'static str {
+        match self {
+            PanelBox::Cpu => "CPU",
+            PanelBox::Mem => "Memory",
+            PanelBox::Net => "Network",
+            PanelBox::Disk => "Disks",
+            PanelBox::Proc => "Processes",
+        }
+    }
+}
+
+/// One of btop's layout presets, as a list of boxes in reading order.
+///
+/// A box may repeat: the second preset stacks a second CPU box beside the first,
+/// which is what btop's own `cpu1`/`cpu2` layout does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Preset(pub &'static [PanelBox]);
 
 pub const PRESETS: [Preset; 4] = [
-    Preset(&["cpu", "mem", "net", "proc"]),
-    Preset(&["cpu", "cpu", "mem", "disk", "net", "proc"]),
-    Preset(&["cpu", "mem", "disk", "proc"]),
-    Preset(&["cpu", "net", "disk", "mem", "proc"]),
+    Preset(&[PanelBox::Cpu, PanelBox::Mem, PanelBox::Net, PanelBox::Proc]),
+    Preset(&[
+        PanelBox::Cpu,
+        PanelBox::Cpu,
+        PanelBox::Mem,
+        PanelBox::Disk,
+        PanelBox::Net,
+        PanelBox::Proc,
+    ]),
+    Preset(&[PanelBox::Cpu, PanelBox::Mem, PanelBox::Disk, PanelBox::Proc]),
+    Preset(&[
+        PanelBox::Cpu,
+        PanelBox::Net,
+        PanelBox::Disk,
+        PanelBox::Mem,
+        PanelBox::Proc,
+    ]),
 ];
 
 impl Preset {
@@ -138,8 +203,8 @@ impl Preset {
         PRESETS[(i + PRESETS.len() - 1) % PRESETS.len()]
     }
 
-    pub fn contains(&self, box_name: &str) -> bool {
-        self.0.contains(&box_name)
+    pub fn contains(&self, panel_box: PanelBox) -> bool {
+        self.0.contains(&panel_box)
     }
 }
 
@@ -215,9 +280,52 @@ mod tests {
 
     #[test]
     fn a_preset_reports_its_members() {
-        assert!(PRESETS[0].contains("cpu"));
-        assert!(PRESETS[0].contains("proc"));
-        assert!(!PRESETS[0].contains("disk"));
+        assert!(PRESETS[0].contains(PanelBox::Cpu));
+        assert!(PRESETS[0].contains(PanelBox::Proc));
+        assert!(!PRESETS[0].contains(PanelBox::Disk));
+    }
+
+    /// The regression guard for the bug that shipped: the presets spelled the
+    /// disks box `"disk"` and the renderer asked for `"disks"`, so the panel
+    /// never rendered in any layout and nothing failed.
+    ///
+    /// A `&str` comparison made that a silent no-op. `PanelBox` makes it a
+    /// compile error, and this test makes the *intent* explicit: every box that
+    /// exists must appear in at least one preset, or it is dead UI.
+    #[test]
+    fn every_box_appears_in_at_least_one_preset() {
+        for panel_box in PanelBox::ALL {
+            assert!(
+                PRESETS.iter().any(|p| p.contains(panel_box)),
+                "{} is in PanelBox::ALL but in no preset, so it can never render",
+                panel_box.as_str()
+            );
+        }
+    }
+
+    /// Every preset carries the process box. btop without it is not a monitor.
+    #[test]
+    fn every_preset_has_cpu_and_proc() {
+        for (i, preset) in PRESETS.iter().enumerate() {
+            assert!(preset.contains(PanelBox::Cpu), "preset {i} has no CPU box");
+            assert!(
+                preset.contains(PanelBox::Proc),
+                "preset {i} has no process box"
+            );
+        }
+    }
+
+    #[test]
+    fn box_names_are_the_ones_the_config_and_logs_use() {
+        // These strings reach the log file and any future config key, so a
+        // rename here is a user-visible change, not an internal one.
+        assert_eq!(PanelBox::Cpu.as_str(), "cpu");
+        assert_eq!(PanelBox::Mem.as_str(), "mem");
+        assert_eq!(PanelBox::Net.as_str(), "net");
+        assert_eq!(PanelBox::Disk.as_str(), "disk");
+        assert_eq!(PanelBox::Proc.as_str(), "proc");
+        // The titles are drawn on the panel frames.
+        assert_eq!(PanelBox::Disk.title(), "Disks");
     }
 
     #[test]
