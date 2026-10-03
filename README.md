@@ -63,9 +63,10 @@ renders `—`, `kill` on a foreign process surfaces EPERM without dying.
 ## Build and run
 
 ```bash
-cargo run                    # debug build + window
-cargo run --release          # slow: lto = "thin", codegen-units = 1 on ~33 MB
-cargo build --bin btop-gpui  # binary only, no window
+script/linux                # system build deps + rustup, once
+cargo run                   # debug build + window
+cargo run --release         # slow: lto = "thin", codegen-units = 1 on ~33 MB
+cargo build --bin btop-gpui # binary only, no window
 ```
 
 The first build downloads well over 300 MB of crates and compiles ~850 of them.
@@ -75,9 +76,8 @@ Expect several minutes.
 
 Builds on this machine are a metered resource. A default `cargo build` fans out
 to 8 parallel `rustc` processes, pins every core, and throttles for minutes.
-`target/` is already several GB.
 
-Create `.cargo/config.toml` (it does not exist yet):
+`.cargo/config.toml` already caps it:
 
 ```toml
 [build]
@@ -99,6 +99,35 @@ dependency versions casually, and ask before any `--release` build.
 
 ---
 
+## Install a released build
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Michael-Obele/btop-gpui/main/install.sh | sh
+```
+
+Downloads the `x86_64` or `aarch64` tarball, unpacks it into
+`~/.local/btop-gpui.app`, symlinks the binary into `~/.local/bin`, and installs
+the launcher entry and icon. No sudo, nothing outside `$HOME`.
+
+- **Update:** re-run the same command. The symlink follows the new version.
+- **Uninstall:** `BTOP_GPUI_UNINSTALL=1 sh install.sh`, or
+  `rm -rf ~/.local/btop-gpui.app ~/.local/bin/btop-gpui`.
+- **Other channels:** `BTOP_GPUI_CHANNEL=nightly`, or
+  `BTOP_GPUI_VERSION=v0.2.0` for a specific tag.
+
+Runtime requirements are four X11/xkbcommon libraries plus `libvulkan.so.1` and
+`libfontconfig.so.1`. The first four are caught by `ldd`; the last two are
+`dlopen`ed by GPUI after start, so `install.sh` checks for them separately and
+names the apt package. On a bare system:
+
+```bash
+sudo apt install libxcb1 libxkbcommon-x11-0 libxau6 libvulkan1 libfontconfig1 fonts-dejavu-core
+```
+
+Wayland and X11 both work; GPUI picks whichever the session provides.
+
+---
+
 ## The full verification set
 
 ```bash
@@ -106,10 +135,16 @@ cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test --lib
 cargo check --all-targets
+script/check-architecture
 ```
 
 `cargo test --lib` must report **126 passed / 0 failed**. A test command that
 discovers zero tests exits 0 — treat "0 tests run" as a failure, not a pass.
+CI enforces the same floor.
+
+`script/check-architecture` enforces the two rules the design rests on: that
+`src/collect/` and `src/model.rs` never import GPUI, and that nothing unwraps a
+fallible `/proc` or `/sys` read outside a test.
 
 Run these at the end of a task, not in a loop.
 

@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Build a release binary and pack it into `btop-gpui-linux-<arch>.tar.gz`.
+#
+# The tarball layout mirrors Zed's, because that is the layout `install.sh`
+# expects and the one users already have a mental model for:
+#
+#   btop-gpui-linux-x86_64/
+#     bin/btop-gpui                       the binary
+#     share/applications/btop-gpui.desktop
+#     share/icons/hicolor/scalable/apps/btop-gpui.svg
+#     README.md, LICENSE
+#
+# Usage:
+#   script/bundle-linux [--target <rust-triple>]
+#
+#   --target  a Rust target triple to cross-compile for. Defaults to the host.
+#             The bundle is named for the *target's* architecture, not
+#             `uname -m`, so a cross build is named correctly.
+#
+# Environment:
+#   REPO      owner/name, for the install line printed at the end
+set -xeuo pipefail
+
+cd "$(dirname "$0")/.."
+
+REPO="${REPO:-Michael-Obele/btop-gpui}"
+
+TARGET=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+  --target)
+    TARGET="$2"
+    shift 2
+    ;;
+  *)
+    echo "Unknown argument: $1" >&2
+    exit 1
+    ;;
+  esac
+done
+
+# Name the bundle for the architecture actually being built. `uname -m` is only
+# correct when building for the host, which is the default.
+case "${TARGET:-$(uname -m)}" in
+aarch64-unknown-linux-gnu | aarch64 | arm64) ARCH=aarch64 ;;
+x86_64-unknown-linux-gnu | x86_64 | amd64) ARCH=x86_64 ;;
+"")
+  echo "Could not determine the target architecture" >&2
+  exit 1
+  ;;
+*)
+  echo "Unsupported target: $TARGET (only x86_64 and aarch64 are built)" >&2
+  exit 1
+  ;;
+esac
+
+BUNDLE="btop-gpui-linux-$ARCH"
+STAGE="target/$BUNDLE"
+
+# --- build -----------------------------------------------------------------
+# CARGO_INCREMENTAL=0 because there is no cache to reuse in CI and incremental
+# data makes the tarball bigger for no benefit.
+if [ -n "$TARGET" ]; then
+  CARGO_INCREMENTAL=0 cargo build --release --locked --target "$TARGET"
+  BUILT="target/$TARGET/release/btop-gpui"
+else
+  CARGO_INCREMENTAL=0 cargo build --release --locked
+  BUILT="target/release/btop-gpui"
+fi
+
+# --- stage -----------------------------------------------------------------
+rm -rf "$STAGE"
+mkdir -p "$STAGE/bin" "$STAGE/share/applications" "$STAGE/share/icons/hicolor/scalable/apps"
+
+install -m 755 "$BUILT" "$STAGE/bin/btop-gpui"
+
+# The desktop entry ships with `Exec=btop-gpui` and `Icon=btop-gpui`, both of
+# which resolve once install.sh symlinks the binary into ~/.local/bin and
+# copies the icon into the hicolor theme. Nothing is rewritten here.
+install -m 644 packaging/btop-gpui.desktop "$STAGE/share/applications/btop-gpui.desktop"
+install -m 644 packaging/btop-gpui.svg \
+  "$STAGE/share/icons/hicolor/scalable/apps/btop-gpui.svg"
+
+cp README.md "$STAGE/README.md"
+[[ -f LICENSE ]] && cp LICENSE "$STAGE/LICENSE"
+
+# A checksum beside the artefact, so a user can verify the download before
+# running it. `sha256sum -c` reads this file directly.
+( cd "$STAGE" && find . -type f ! -name 'SHA256SUMS' -print0 |
+  sort -z |
+  xargs -0 sha256sum >SHA256SUMS )
+
+# A binary built for another architecture cannot be probed with ldd here, so
+# only check when this is the host build.
+if [ -z "$TARGET" ] && command -v ldd >/dev/null 2>&1; then
+  missing="$(ldd "$STAGE/bin/btop-gpui" | sed -n 's/^[[:space:]]*\(.*\) => not found$/\1/p')"
+  if [ -n "$missing" ]; then
+    echo "::error::unresolved runtime libraries:" >&2
+    printf '%s\n' "$missing" >&2
+    exit 1
+  fi
+fi
+
+# --- tar -------------------------------------------------------------------
+mkdir -p target/release
+tar -czf "target/release/$BUNDLE.tar.gz" -C target "$BUNDLE"
+
+echo
+echo "Built target/release/$BUNDLE.tar.gz"
+echo "Install with:"
+echo "  curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | sh"

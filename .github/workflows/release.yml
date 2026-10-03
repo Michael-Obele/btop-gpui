@@ -1,0 +1,186 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish a release for
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Everything that can fail cheaply fails here first, so a broken tag does not
+  # spend ten minutes of runner time on a release build.
+  verify:
+    name: verify
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install build dependencies
+        run: ./script/linux
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+
+      - name: Architecture invariants
+        run: ./script/check-architecture
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --lib --locked
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: verify
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner_arch: x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner_arch: aarch64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install build dependencies
+        run: ./script/linux
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      # Cross-compiling to aarch64 needs the gcc-aarch64 toolchain and the
+      # aarch64 flavour of the X11/xkbcommon headers. build-essential alone
+      # would link against the host's x86_64 libraries.
+      - name: Install the cross toolchain
+        if: matrix.runner_arch == 'aarch64'
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            libx11-xcb-dev:arm64 \
+            libxcb1-dev:arm64 \
+            libxkbcommon-x11-dev:arm64 \
+            libxau-dev:arm64
+
+      - name: Build and bundle
+        env:
+          # bundle-linux reads `uname -m`, so it has to believe it is on the
+          # target. A qemu-user binfmt handler makes the bundle step itself run
+          # natively; it never executes the binary.
+          ARCH_OVERRIDE: ${{ matrix.runner_arch }}
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+          AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+          PKG_CONFIG_PATH_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig
+          PKG_CONFIG_LIBDIR_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig
+          PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu: /usr
+        run: |
+          if [ "${{ matrix.runner_arch }}" = aarch64 ]; then
+            echo "Installing the qemu binfmt handler so uname-based scripts run."
+            sudo apt-get install -y qemu-user-static binfmt-support
+            sudo update-binfmts --enable qemu-aarch64
+          fi
+          REPO="${{ github.repository }}" \
+            CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+            ./script/bundle-linux --target "${{ matrix.target }}"
+
+      - name: Verify the artifact
+        run: |
+          name="btop-gpui-linux-${{ matrix.runner_arch }}.tar.gz"
+          test -f "target/release/$name"
+          tar -tzf "target/release/$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: btop-gpui-linux-${{ matrix.runner_arch }}
+          path: target/release/btop-gpui-linux-${{ matrix.runner_arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish to the GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Show what will be published
+        run: ls -lh artifacts/*/
+
+      # `gh release upload` is idempotent per asset name, but a re-run against
+      # an existing release errors on the duplicate. `--clobber` overwrites.
+      # The tag is created if it does not exist, so `workflow_dispatch` works
+      # for a tag that was never pushed.
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; replacing its assets."
+          else
+            gh release create "$TAG" \
+              --title "btop-gpui $TAG" \
+              --generate-notes \
+              --draft
+            echo "Created a draft release for $TAG."
+          fi
+          gh release upload "$TAG" artifacts/*/*.tar.gz --clobber
+
+      - name: Confirm both architectures landed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          echo "$assets"
+          for want in btop-gpui-linux-x86_64.tar.gz btop-gpui-linux-aarch64.tar.gz; do
+            if ! printf '%s\n' "$assets" | grep -qx "$want"; then
+              echo "::error::missing asset: $want"
+              exit 1
+            fi
+          done
+          echo "Both architectures present."
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Draft on purpose: a release is published by a human who has looked
+          # at the assets. Remove this step to publish automatically.
+          gh release edit "$TAG" --draft=false
+          echo "Published https://github.com/${{ github.repository }}/releases/tag/$TAG"
+          echo
+          echo "Install:"
+          echo "  curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/$TAG/install.sh | sh"

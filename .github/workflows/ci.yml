@@ -1,0 +1,156 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch makes the in-flight run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # `jobs = 4` in .cargo/config.toml caps the local laptop; CI has cores to
+  # spare, so lift it here and keep the warm-cache config for developers.
+  CARGO_BUILD_JOBS: 0
+
+jobs:
+  # `cargo test --lib` builds only the library test harness. It never links the
+  # ~33 MB GPUI binary, so this runs in well under a minute on a clean runner.
+  test:
+    name: test (data layer)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: ./script/linux
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+
+      - name: Run the data-layer suite
+        run: cargo test --lib --locked
+
+      - name: Prove the suite is not vacuously green
+        run: |
+          # A test command that discovers zero tests exits 0. Parse the count
+          # and fail if it dropped, so a broken harness cannot read as a pass.
+          count=$(cargo test --lib --locked 2>&1 |
+            sed -n 's/^test result: ok\. \([0-9]*\) passed.*/\1/p' | tail -1)
+          echo "Tests reported: ${count:-0}"
+          if [ "${count:-0}" -lt 100 ]; then
+            echo "::error::expected at least 100 tests, got ${count:-0}"
+            exit 1
+          fi
+
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: ./script/linux
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+  # Proves the two-layer invariant AGENTS.md §1 depends on. The rules are in
+  # `script/check-architecture` so they run identically here and on a laptop.
+  architecture:
+    name: architecture invariants
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the data/UI split and the fallibility rule
+        run: ./script/check-architecture
+
+  # Shell scripts carry the install path, so a syntax error in install.sh is a
+  # broken download link for every user. `bash -n` needs no shellcheck install.
+  scripts:
+    name: shell scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax-check every script
+        run: |
+          for f in install.sh script/linux script/bundle-linux script/check-architecture; do
+            echo "checking $f"
+            # install.sh is POSIX sh; the others are bash.
+            case "$f" in
+            install.sh) sh -n "$f" ;;
+            *) bash -n "$f" ;;
+            esac
+          done
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # -e exits on error; the install scripts use SC1091 for the rustup
+          # env file, which is sourced at runtime and cannot be resolved here.
+          shellcheck -e SC1091 install.sh script/linux script/bundle-linux script/check-architecture
+
+      - name: install.sh uninstall is a no-op on a clean machine
+        run: |
+          # Prove the uninstall path does not error when nothing is installed,
+          # which is the state every first-time CI run is in.
+          HOME="$(mktemp -d)" BTOP_GPUI_UNINSTALL=1 sh ./install.sh
+
+  # A full release build on every push is too slow for a 2-second-tick desktop
+  # app whose binary is 33 MB, so it runs on tags and on demand. `--locked` is
+  # the point: a Cargo.lock that drifts from Cargo.toml must not build here.
+  build:
+    name: release build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: ./script/linux
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+
+      - name: Build the release binary
+        run: cargo build --release --locked
+
+      - name: Smoke-test the binary
+        run: |
+          # There is no --help, and the app needs a display to do anything
+          # useful, so the cheapest real check is that the linker resolved
+          # every library. A missing one shows up here rather than as a failed
+          # window on a user's machine.
+          test -x target/release/btop-gpui
+          missing="$(ldd target/release/btop-gpui | sed -n 's/^[[:space:]]*\(.*\) => not found$/\1/p')"
+          if [ -n "$missing" ]; then
+            echo "::error::unresolved runtime libraries:"
+            printf '%s\n' "$missing"
+            exit 1
+          fi
+          echo "All libraries resolved."
+
+      - name: Bundle the tarball
+        run: REPO="${{ github.repository }}" ./script/bundle-linux
+
+      - name: Verify the tarball layout
+        run: |
+          # install.sh unpacks this exact structure, so the layout is a contract.
+          # Checking it here means a rename in bundle-linux fails CI rather than
+          # every user's first `curl | sh`.
+          tar -tzf target/release/btop-gpui-linux-x86_64.tar.gz | sort

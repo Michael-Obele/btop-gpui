@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Install the system libraries btop-gpui needs to *build*, and nothing else.
+#
+# Modelled on Zed's `script/linux`, but trimmed to what this project actually
+# links against. Verified with `ldd target/release/btop-gpui` on x86_64:
+#
+#   libxcb, libxcb-xkb, libxkbcommon, libxkbcommon-x11  -> -dev packages below
+#   libc, libm, libgcc_s                                -> libc6-dev, pulled in
+#                                                        by build-essential
+#   libXau, libXdmcp, libbsd, libmd                    -> transitive of the above
+#
+# Note what is NOT in the link line: no Vulkan loader and no fontconfig.
+# GPUI loads `libvulkan.so.1` and fontconfig at *run* time through dlopen, so a
+# missing one is a startup crash rather than a link error. `install.sh` checks
+# for those separately, which is why it lists them as runtime requirements.
+set -xeuo pipefail
+
+if [ "$(id -u)" -eq 0 ]; then
+  maysudo=''
+else
+  maysudo="$(command -v sudo || command -v doas || true)"
+fi
+
+# The Rust toolchain is a build dependency like any other.
+function finalize {
+  if ! command -v rustup >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    # shellcheck disable=SC1091
+    . "$HOME/.cargo/env"
+  fi
+  cat <<'EOF'
+
+Finished installing btop-gpui build dependencies.
+EOF
+}
+
+# Ubuntu, Debian, Mint, Zorin, Pop!_OS, Kali, Raspbian, ...
+apt="$(command -v apt-get || true)"
+if [[ -n $apt ]]; then
+  deps=(
+    build-essential
+    pkg-config
+    clang
+    cmake
+    git
+    curl
+    jq
+    # -dev packages for the four libraries the binary links directly.
+    libx11-xcb-dev
+    libxcb1-dev
+    libxkbcommon-x11-dev
+    # In ldd output transitively; the headers come from here.
+    libxau-dev
+    libxdmcp-dev
+    libbsd-dev
+    # dlopen'd at run time, so needed even though the linker never asks.
+    libvulkan1
+    libfontconfig1
+    vulkan-tools
+    fonts-dejavu-core
+  )
+
+  # GCC 13 is the first release with the C++20 support gpui-pre's Vite build
+  # needs. Ubuntu 24.04 (noble) — which Zorin OS 18 is based on — ships it
+  # already; older releases need an older libstdc++.
+  if grep -qP 'PRETTY_NAME="(Debian|Raspbian).+13' /etc/os-release; then
+    true
+  elif grep -qP 'PRETTY_NAME="(Linux Mint 22|.+24\.(04|10))' /etc/os-release; then
+    deps+=(libstdc++-13-dev)
+  elif grep -qP 'PRETTY_NAME="((Debian|Raspbian).+12|Linux Mint 21|.+22\.04)' /etc/os-release; then
+    deps+=(libstdc++-12-dev)
+  else
+    echo "Unrecognised release; installing the generic set and hoping."
+  fi
+
+  $maysudo "$apt" update
+  $maysudo "$apt" install -y "${deps[@]}"
+
+  finalize
+  exit 0
+fi
+
+# Fedora, CentOS, RHEL, Alma, Rocky, Oracle.
+dnf="$(command -v dnf || true)"
+yum="$(command -v yum || true)"
+if [[ -n $dnf ]] || [[ -n $yum ]]; then
+  pkg_cmd="${dnf:-${yum}}"
+  deps=(
+    gcc
+    g++
+    clang
+    cmake
+    pkgconf-pkg-config
+    git
+    curl
+    jq
+    libxcb-devel
+    libxkbcommon-x11-devel
+    libXau-devel
+    vulkan-loader
+    fontconfig
+    mesa-vulkan-drivers
+    google-noto-sans-fonts
+  )
+  if grep -qP '^ID="?(fedora)' /etc/os-release; then
+    deps+=(perl-FindBin perl-IPC-Cmd perl-File-Compare perl-File-Copy)
+  elif grep -qP '^ID="?(rhel|rocky|alma|centos|ol)' /etc/os-release; then
+    deps+=(perl-interpreter)
+  fi
+
+  $maysudo "$pkg_cmd" install -y "${deps[@]}"
+  finalize
+  exit 0
+fi
+
+# Arch, Manjaro, CachyOS, Endeavour.
+pacman="$(command -v pacman || true)"
+if [[ -n $pacman ]]; then
+  $maysudo pacman -Syu --needed --noconfirm \
+    base-devel clang cmake pkgconf git curl jq \
+    libxcb libxkbcommon libxkbcommon-x11 libxau vulkan-icd-loader fontconfig
+
+  finalize
+  exit 0
+fi
+
+# openSUSE.
+zyp="$(command -v zypper || true)"
+if [[ -n $zyp ]]; then
+  $maysudo "$zyp" install -y \
+    gcc gcc-c++ clang cmake pkg-config git curl jq \
+    libxcb-devel libxkbcommon-x11-devel libXau-devel \
+    libvulkan1 fontconfig
+
+  finalize
+  exit 0
+fi
+
+echo "Unsupported distribution: install the X11/xkbcommon, Vulkan and" >&2
+echo "fontconfig packages yourself, then re-run." >&2
+exit 1
