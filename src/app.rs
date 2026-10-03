@@ -731,6 +731,44 @@ impl AppView {
                 self.cycle_theme(cx);
                 return;
             }
+            // btop's `1`-`5` box toggles. GPU has no panel in v1, so there is
+            // no `5` yet; the key is listed in the help overlay only once it
+            // does something.
+            ("1", false) => {
+                self.toggle_box(PanelBox::Cpu, cx);
+                return;
+            }
+            ("2", false) => {
+                self.toggle_box(PanelBox::Mem, cx);
+                return;
+            }
+            ("3", false) => {
+                self.toggle_box(PanelBox::Net, cx);
+                return;
+            }
+            ("4", false) => {
+                self.toggle_box(PanelBox::Proc, cx);
+                return;
+            }
+            // Selection movement. These act on the list whether or not the
+            // process box is on screen, so they sit above the "needs a
+            // selected pid" block below.
+            ("up", _) => {
+                self.move_selection(-1, cx);
+                return;
+            }
+            ("down", _) => {
+                self.move_selection(1, cx);
+                return;
+            }
+            ("home", _) => {
+                self.select_edge(false, cx);
+                return;
+            }
+            ("end", _) => {
+                self.select_edge(true, cx);
+                return;
+            }
             _ => {}
         }
 
@@ -765,6 +803,85 @@ impl AppView {
     pub fn select(&mut self, pid: Option<i32>, cx: &mut Context<Self>) {
         self.selected_pid = pid;
         cx.notify();
+    }
+
+    /// Move the selection by `delta` rows, as btop's `Up`/`Down` do.
+    ///
+    /// Operates on the *filtered, sorted* order, so "down" means down the list
+    /// the user can actually see. `None` on the first keypress selects the top
+    /// row, which is what a keyboard user expects from an unselected list.
+    pub fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let current = self
+            .selected_pid
+            .and_then(|pid| self.proc_rows.iter().position(|p| p.pid == pid));
+        let Some(next) = next_selection_ix(current, delta, self.proc_rows.len()) else {
+            return;
+        };
+        self.selected_pid = Some(self.proc_rows[next].pid);
+        self.scroll_selected_into_view(cx);
+        cx.notify();
+    }
+
+    /// Jump the selection to the first or last row — btop's `Home`/`End`.
+    pub fn select_edge(&mut self, last: bool, cx: &mut Context<Self>) {
+        if self.proc_rows.is_empty() {
+            return;
+        }
+        let ix = if last { self.proc_rows.len() - 1 } else { 0 };
+        self.selected_pid = Some(self.proc_rows[ix].pid);
+        self.scroll_selected_into_view(cx);
+        cx.notify();
+    }
+
+    /// Scroll the virtualized list so the selected row is on screen.
+    ///
+    /// Without this a keyboard user selecting past the bottom of the window
+    /// watches the selection move through rows they cannot see, which is the
+    /// whole problem keyboard navigation is here to solve.
+    fn scroll_selected_into_view(&self, cx: &mut Context<Self>) {
+        let Some(pid) = self.selected_pid else {
+            return;
+        };
+        if let Some(ix) = self.proc_rows.iter().position(|p| p.pid == pid) {
+            self.proc_virtual_scroll
+                .scroll_to_item(ix, gpui_kit::ScrollStrategy::Nearest);
+        }
+        let _ = cx;
+    }
+
+    /// Show or hide one panel box — btop's `1` through `5`.
+    ///
+    /// Toggles the config key rather than view state, so the choice survives a
+    /// restart and lands in the same place the Options dialog writes it.
+    pub fn toggle_box(&mut self, panel_box: PanelBox, cx: &mut Context<Self>) {
+        let key = match panel_box {
+            PanelBox::Cpu => "shown_boxes",
+            PanelBox::Disk => "show_disks",
+            _ => "shown_boxes",
+        };
+        match panel_box {
+            // `show_disks` is a dedicated boolean; the rest live in the
+            // `shown_boxes` list.
+            PanelBox::Disk => {
+                self.toggle_option(key, cx);
+            }
+            _ => {
+                let mut listed = self.config.shown_boxes();
+                let name = panel_box.as_str();
+                if let Some(pos) = listed.iter().position(|b| b == name) {
+                    // CPU and the process list are never removable: a monitor
+                    // that cannot show either is not a monitor.
+                    if matches!(panel_box, PanelBox::Cpu | PanelBox::Proc) {
+                        return;
+                    }
+                    listed.remove(pos);
+                } else {
+                    listed.push(name.to_string());
+                }
+                self.config.set("shown_boxes", &listed.join(" "));
+                self.apply_and_persist(cx);
+            }
+        }
     }
 
     pub fn show_dialog(&mut self, dialog: Dialog, cx: &mut Context<Self>) {
@@ -869,7 +986,7 @@ impl AppView {
     }
 
     /// Flip a boolean option, apply it live, and persist it.
-    fn toggle_option(&mut self, key: &str, cx: &mut Context<Self>) {
+    pub fn toggle_option(&mut self, key: &str, cx: &mut Context<Self>) {
         let next = !self.config.bool(key);
         self.config.set(key, if next { "True" } else { "False" });
         self.apply_and_persist(cx);
@@ -1202,6 +1319,31 @@ pub fn configured_iface(cfg: &Config) -> Option<String> {
     }
 }
 
+/// Where a `delta` row move lands, or `None` when the list is empty.
+///
+/// Indices into the **visible** row list, not pids: the list re-sorts every
+/// tick, so a cursor held as a pid would be fine but a cursor held as an index
+/// has to be re-derived each move, which is what this does.
+///
+/// Extracted from `move_selection` so the clamping can be tested without a
+/// window — an off-by-one here would silently make `Home` or `End` select
+/// nothing.
+pub fn next_selection_ix(current: Option<usize>, delta: isize, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let last = len - 1;
+    match current {
+        // Nothing selected: the first keypress takes the top row going down, or
+        // the bottom row going up, rather than doing nothing.
+        None => Some(if delta < 0 { last } else { 0 }),
+        Some(ix) => {
+            let moved = ix as isize + delta;
+            Some(moved.clamp(0, last as isize) as usize)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1237,6 +1379,81 @@ mod tests {
 
     /// Only the disks box has a switch; the rest are always available, because a
     /// preset that cannot show CPU is not a monitor.
+    #[test]
+    fn moving_down_from_nothing_selects_the_top_row() {
+        // A keyboard user pressing Down on an unselected list expects a
+        // selection, not silence.
+        assert_eq!(next_selection_ix(None, 1, 10), Some(0));
+    }
+
+    #[test]
+    fn moving_up_from_nothing_selects_the_bottom_row() {
+        assert_eq!(next_selection_ix(None, -1, 10), Some(9));
+    }
+
+    #[test]
+    fn movement_clamps_at_both_ends_rather_than_wrapping() {
+        // btop stops at the ends; wrapping would make it impossible to tell
+        // which end you are at.
+        assert_eq!(next_selection_ix(Some(0), -1, 10), Some(0));
+        assert_eq!(next_selection_ix(Some(9), 1, 10), Some(9));
+        assert_eq!(next_selection_ix(Some(0), -100, 10), Some(0));
+        assert_eq!(next_selection_ix(Some(9), 100, 10), Some(9));
+    }
+
+    #[test]
+    fn movement_walks_the_list() {
+        // Five rows, so the last index is 4.
+        let mut ix = next_selection_ix(None, 1, 5).unwrap();
+        for expected in 1..5 {
+            ix = next_selection_ix(Some(ix), 1, 5).unwrap();
+            assert_eq!(ix, expected);
+        }
+        assert_eq!(ix, 4, "the walk should land on the last row");
+        // And back again. The first step *moves*, so it lands on 3, not 4.
+        for expected in [3, 2, 1, 0] {
+            ix = next_selection_ix(Some(ix), -1, 5).unwrap();
+            assert_eq!(ix, expected);
+        }
+        assert_eq!(ix, 0, "the walk should land back on the first row");
+    }
+
+    #[test]
+    fn an_empty_list_has_no_selection_to_move_to() {
+        // Guards the index arithmetic: `len - 1` on an empty list would
+        // underflow.
+        assert_eq!(next_selection_ix(None, 1, 0), None);
+        assert_eq!(next_selection_ix(Some(0), 1, 0), None);
+        assert_eq!(next_selection_ix(Some(0), -1, 0), None);
+    }
+
+    #[test]
+    fn a_single_row_stays_selected() {
+        assert_eq!(next_selection_ix(None, 1, 1), Some(0));
+        assert_eq!(next_selection_ix(Some(0), 1, 1), Some(0));
+        assert_eq!(next_selection_ix(Some(0), -1, 1), Some(0));
+    }
+
+    #[test]
+    fn the_help_overlay_lists_the_navigation_keys() {
+        // The overlay is generated from `key_bindings`, so a key that exists
+        // but is not listed is invisible to the user. This is the check that
+        // caught the overlay lying in the first place.
+        //
+        // Entries are matched by substring because some list several keys at
+        // once ("Up, Down"), which is how the overlay reads best.
+        let listed = crate::ui::actions::key_bindings()
+            .iter()
+            .map(|(k, _)| k.to_lowercase())
+            .collect::<Vec<_>>();
+        for key in ["up", "down", "home", "end", "1", "2", "3", "4"] {
+            assert!(
+                listed.iter().any(|k| k.contains(key)),
+                "{key} is bound but the help overlay does not list it"
+            );
+        }
+    }
+
     #[test]
     fn the_other_boxes_have_no_switch_and_stay_available() {
         let cfg = Config::parse("show_disks = False\n");
