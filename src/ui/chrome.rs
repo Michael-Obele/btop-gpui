@@ -132,6 +132,18 @@ impl PanelBox {
         PanelBox::Proc,
     ];
 
+    /// Position in [`PanelBox::ALL`], which is also the bit index used by the
+    /// `shown_boxes` mask.
+    pub fn index(self) -> usize {
+        match self {
+            PanelBox::Cpu => 0,
+            PanelBox::Mem => 1,
+            PanelBox::Net => 2,
+            PanelBox::Disk => 3,
+            PanelBox::Proc => 4,
+        }
+    }
+
     /// The lowercase name used in config values and log lines.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -205,6 +217,30 @@ impl Preset {
 
     pub fn contains(&self, panel_box: PanelBox) -> bool {
         self.0.contains(&panel_box)
+    }
+
+    /// Which boxes `shown_boxes` allows, as a bitmask.
+    ///
+    /// `shown_boxes` used to be parsed and written back and then never read, so
+    /// editing it in the config file changed nothing. A bitmask rather than a
+    /// filtered `&'static [PanelBox]` because the filtered list would have to be
+    /// leaked to outlive the borrow — and `apply_config` runs on every options
+    /// change, so that leaks on every toggle.
+    ///
+    /// The CPU and process boxes are always allowed even if the list omits
+    /// them: a monitor that cannot show CPU or its processes is not a monitor,
+    /// and silently rendering nothing is worse than ignoring the key.
+    pub fn shown_mask(cfg: &crate::config::Config) -> u8 {
+        let listed = cfg.shown_boxes();
+        let mut mask = 0u8;
+        for panel_box in PanelBox::ALL {
+            let wanted = matches!(panel_box, PanelBox::Cpu | PanelBox::Proc)
+                || listed.iter().any(|a| a == panel_box.as_str());
+            if wanted {
+                mask |= 1 << panel_box.index();
+            }
+        }
+        mask
     }
 }
 

@@ -12,12 +12,89 @@ use gpui_kit::{
 
 use crate::app::AppView;
 use crate::collect::proc::ProcSort;
-use crate::format::{self, SizeScale};
+use crate::config::Config;
+use crate::format::{self, SizeScale, TempScale};
 use crate::history::History;
 use crate::model::{CPU_FIELD_NAMES, ProcSnapshot, Snapshot};
 use crate::ui::chart;
 use crate::ui::chrome::{meter, panel_body};
 use crate::ui::theme;
+
+/// The config-driven display options, read **once per tick** in `pull()` and
+/// passed to each panel.
+///
+/// Every one of these used to be a key in `DESCRIPTIONS` that nothing read, so
+/// the config file advertised switches with no effect. Gathering them into one
+/// struct means a panel cannot accidentally read the config during `render()`,
+/// and adding a display option is a change in exactly two places.
+#[derive(Debug, Clone, Copy)]
+pub struct PanelOpts {
+    pub show_uptime: bool,
+    pub show_swap: bool,
+    pub show_cpu_watts: bool,
+    pub show_io_stat: bool,
+    pub mem_graphs: bool,
+    pub net_auto: bool,
+    /// Fixed network graph ceilings in **bytes/sec**, used when `net_auto` is
+    /// off. The config stores Mibibits/s, so it converts on the way in.
+    pub net_download_max: f32,
+    pub net_upload_max: f32,
+    pub proc_colors: bool,
+    pub proc_mem_bytes: bool,
+    pub cpu_meter_style: CpuMeterStyle,
+    pub temp_scale: TempScale,
+}
+
+impl PanelOpts {
+    /// Read every display option out of the config.
+    pub fn from_config(cfg: &Config) -> Self {
+        Self {
+            show_uptime: cfg.bool("show_uptime"),
+            show_swap: cfg.bool("show_swap"),
+            show_cpu_watts: cfg.bool("show_cpu_watts"),
+            show_io_stat: cfg.bool("show_io_stat"),
+            mem_graphs: cfg.bool("mem_graphs"),
+            net_auto: cfg.bool("net_auto"),
+            net_download_max: mibits_to_bytes_per_sec(cfg.int("net_download")),
+            net_upload_max: mibits_to_bytes_per_sec(cfg.int("net_upload")),
+            proc_colors: cfg.bool("proc_colors"),
+            proc_mem_bytes: cfg.bool("proc_mem_bytes"),
+            cpu_meter_style: CpuMeterStyle::from_config(&cfg.str("cpu_meter_style")),
+            temp_scale: TempScale::from_config(&cfg.str("temp_scale")),
+        }
+    }
+}
+
+impl Default for PanelOpts {
+    /// Every display option on, which is what the config defaults describe.
+    fn default() -> Self {
+        Self::from_config(&Config::defaults())
+    }
+}
+
+/// Mibibits/s, as btop stores `net_download` / `net_upload`, to the bytes/sec
+/// the history rings actually hold.
+///
+/// A ceiling of zero would flatten the graph to nothing, so it is floored at 1.
+fn mibits_to_bytes_per_sec(mibits: i64) -> f32 {
+    (mibits.max(1) as f32) * 1024.0 * 1024.0 / 8.0
+}
+
+/// How per-core load is drawn: a bar, or a filled chip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuMeterStyle {
+    Bar,
+    Chip,
+}
+
+impl CpuMeterStyle {
+    pub fn from_config(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "chip" => Self::Chip,
+            _ => Self::Bar,
+        }
+    }
+}
 
 /// Renders `—` when there is no snapshot yet.
 fn no_data(cx: &App) -> Div {
@@ -27,7 +104,13 @@ fn no_data(cx: &App) -> Div {
         .child("—")
 }
 
-pub fn cpu_panel(snapshot: Option<&Snapshot>, history: &History, tick_secs: f32, cx: &App) -> Div {
+pub fn cpu_panel(
+    snapshot: Option<&Snapshot>,
+    history: &History,
+    tick_secs: f32,
+    opts: &PanelOpts,
+    cx: &App,
+) -> Div {
     let Some(s) = snapshot else {
         return no_data(cx);
     };
@@ -90,10 +173,19 @@ pub fn cpu_panel(snapshot: Option<&Snapshot>, history: &History, tick_secs: f32,
                 .text_xs()
                 .text_color(theme.muted_foreground)
                 .child(format!("load {:.2}", s.cpu.load_avg[0]))
-                .child(format!("up {}", format::duration(s.cpu.uptime_seconds)))
-                .child(format!("cores {}", s.cpu.core_count)),
+                // `show_uptime` was declared and never read; uptime was drawn
+                // unconditionally.
+                .when(opts.show_uptime, |el| {
+                    el.child(format!("up {}", format::duration(s.cpu.uptime_seconds)))
+                })
+                .child(format!("cores {}", s.cpu.core_count))
+                // Watts are collected by the CPU collector (and need
+                // cap_perfmon), but were never displayed at all.
+                .when(opts.show_cpu_watts, |el| {
+                    el.child(format::watts(s.cpu.watts))
+                }),
         )
-        .child(per_core_grid(s, cx))
+        .child(per_core_grid(s, cx, opts))
 }
 
 /// One compact cell per logical CPU, laid out in a wrapping row — btop's
@@ -103,13 +195,16 @@ pub fn cpu_panel(snapshot: Option<&Snapshot>, history: &History, tick_secs: f32,
 /// is, how fast it is running, and how hot it is. The speed and temperature are
 /// `Option` because both are absent in a container or a VM, and a missing sensor
 /// has to read as a dash rather than as zero.
-fn per_core_grid(snapshot: &Snapshot, cx: &App) -> impl IntoElement {
+fn per_core_grid(snapshot: &Snapshot, cx: &App, opts: &PanelOpts) -> impl IntoElement {
     let theme = cx.theme();
     // Copied out as `Copy` values so the closure below captures no borrow of
     // `cx` — a captured borrow is what makes `.children(iter.map(..))` fail to
     // compile when the caller also holds `cx` mutably.
     let (muted, foreground) = (theme.muted_foreground, theme.foreground);
     let fill = theme::stroke(cx, 0);
+    // Copied out so the closure captures plain `Copy` values rather than a
+    // borrow of `opts`, which would not outlive the iterator.
+    let (style, temp_scale) = (opts.cpu_meter_style, opts.temp_scale);
 
     h_flex()
         .flex_wrap()
@@ -122,12 +217,44 @@ fn per_core_grid(snapshot: &Snapshot, cx: &App) -> impl IntoElement {
                 .iter()
                 .enumerate()
                 .map(move |(ix, core)| {
+                    // Temperatures were formatted inline as `{temp:.0}°C`, so
+                    // `temp_scale` had no effect even though `format` had a
+                    // scale-aware function all along.
+                    let temp = format::temperature(core.temp_c, temp_scale);
                     let detail = match (core.mhz, core.temp_c) {
-                        (Some(mhz), Some(temp)) => format!("{mhz} MHz · {temp:.0}°C"),
+                        (Some(mhz), Some(_)) => format!("{mhz} MHz · {temp}"),
                         (Some(mhz), None) => format!("{mhz} MHz"),
-                        (None, Some(temp)) => format!("{temp:.0}°C"),
+                        (None, Some(_)) => temp,
                         (None, None) => "—".to_string(),
                     };
+
+                    // `Chip` draws the load as a filled block instead of a
+                    // Progress bar, which is denser when there are 16+ cores.
+                    let load = match style {
+                        CpuMeterStyle::Chip => div()
+                            .h(px(6.))
+                            .w_full()
+                            .rounded_full()
+                            .bg(fill.opacity(0.25))
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(gpui_kit::relative(core.percent.clamp(0.0, 100.0) / 100.0))
+                                    .rounded_full()
+                                    .bg(fill),
+                            )
+                            .into_any_element(),
+                        CpuMeterStyle::Bar => {
+                            // The id must be unique per core: gpui-kit derives
+                            // the a11y node id from it and two bars sharing one
+                            // panic at window-build time.
+                            gpui_kit::component::progress::Progress::new(format!("core-{ix}"))
+                                .value(core.percent.clamp(0.0, 100.0))
+                                .color(fill)
+                                .into_any_element()
+                        }
+                    };
+
                     v_flex()
                         .flex_none()
                         .w(px(120.))
@@ -143,14 +270,7 @@ fn per_core_grid(snapshot: &Snapshot, cx: &App) -> impl IntoElement {
                                         .child(format!("{:.0}%", core.percent)),
                                 ),
                         )
-                        .child(
-                            // The id must be unique per core: gpui-kit derives
-                            // the a11y node id from it and two bars sharing one
-                            // panic at window-build time.
-                            gpui_kit::component::progress::Progress::new(format!("core-{ix}"))
-                                .value(core.percent.clamp(0.0, 100.0))
-                                .color(fill),
-                        )
+                        .child(load)
                         .child(div().text_xs().text_color(muted).child(detail))
                 }),
         )
@@ -208,13 +328,14 @@ pub fn mem_panel(
     history: &History,
     scale: SizeScale,
     tick_secs: f32,
+    opts: &PanelOpts,
     cx: &App,
 ) -> Div {
     let Some(s) = snapshot else {
         return no_data(cx);
     };
     let theme = cx.theme();
-    panel_body()
+    let mut body = panel_body()
         .child(
             h_flex()
                 .justify_between()
@@ -230,13 +351,6 @@ pub fn mem_panel(
                         .child(format::percent(s.mem.used_percent, 0)),
                 ),
         )
-        .child(div().flex_1().min_h(px(80.)).child(chart::percent_chart(
-            "mem-used",
-            &history.mem_used,
-            theme::stroke(cx, 1),
-            "used",
-            tick_secs,
-        )))
         .child(meter(
             format!("used {}", format::bytes(s.mem.used_bytes, scale)),
             s.mem.used_percent,
@@ -255,8 +369,24 @@ pub fn mem_panel(
                     "cached {}",
                     format::bytes(s.mem.cached_bytes, scale)
                 )),
-        )
-        .child(
+        );
+
+    // `mem_graphs = False` drops the chart but keeps the panel's other
+    // readouts, so the box shrinks instead of disappearing.
+    if opts.mem_graphs {
+        body = body.child(div().flex_1().min_h(px(80.)).child(chart::percent_chart(
+            "mem-used",
+            &history.mem_used,
+            theme::stroke(cx, 1),
+            "used",
+            tick_secs,
+        )));
+    }
+
+    // Swap is frequently zero and frequently unwanted; it was previously drawn
+    // unconditionally, so `show_swap = False` did nothing.
+    if opts.show_swap {
+        body = body.child(
             h_flex()
                 .gap_3()
                 .text_xs()
@@ -266,7 +396,10 @@ pub fn mem_panel(
                     format::bytes(s.mem.swap_used_bytes, scale),
                     format::bytes(s.mem.swap_total_bytes, scale)
                 )),
-        )
+        );
+    }
+
+    body
 }
 
 pub fn net_panel(
@@ -275,6 +408,7 @@ pub fn net_panel(
     interface: Option<&str>,
     scale: SizeScale,
     tick_secs: f32,
+    opts: &PanelOpts,
     cx: &App,
 ) -> Div {
     let Some(s) = snapshot else {
@@ -351,6 +485,10 @@ pub fn net_panel(
                 names: ("download", "upload"),
                 unit: " B/s",
                 tick_secs,
+                auto_scale: opts.net_auto,
+                // Both series share one axis, so the ceiling is whichever of
+                // the two configured limits is higher.
+                fixed_max: Some(opts.net_download_max.max(opts.net_upload_max)),
             },
         )));
     }
@@ -362,6 +500,7 @@ pub fn disk_panel(
     history: &History,
     scale: SizeScale,
     tick_secs: f32,
+    opts: &PanelOpts,
     cx: &App,
 ) -> Div {
     let Some(s) = snapshot else {
@@ -380,34 +519,46 @@ pub fn disk_panel(
 
     let mut body = panel_body();
     for disk in &s.disks {
-        body = body.child(
-            v_flex()
-                .gap_1()
+        let mut row = v_flex().gap_1().child(
+            h_flex()
+                .justify_between()
+                .text_xs()
                 .child(
-                    h_flex()
-                        .justify_between()
-                        .text_xs()
-                        .child(
-                            div()
-                                .text_color(theme.foreground)
-                                .child(format!("{} {}", disk.name, disk.mount_point)),
-                        )
-                        .child(div().text_color(theme.muted_foreground).child(format!(
-                            "{}/{}",
-                            format::bytes(disk.total_bytes.saturating_sub(disk.free_bytes), scale),
-                            format::bytes(disk.total_bytes, scale)
-                        ))),
+                    div()
+                        .text_color(theme.foreground)
+                        .child(format!("{} {}", disk.name, disk.mount_point)),
                 )
-                .child(meter(
-                    format!(
-                        "r {}  w {}",
-                        format::rate(disk.read_bytes_per_sec, scale),
-                        format::rate(disk.write_bytes_per_sec, scale)
-                    ),
-                    disk.used_percent,
-                    cx,
-                )),
+                .child(div().text_color(theme.muted_foreground).child(format!(
+                    "{}/{}",
+                    format::bytes(disk.total_bytes.saturating_sub(disk.free_bytes), scale),
+                    format::bytes(disk.total_bytes, scale)
+                ))),
         );
+
+        // The capacity bar is always drawn; the r/w rates and the throughput
+        // chart below are what `show_io_stat = False` removes.
+        if opts.show_io_stat {
+            row = row.child(meter(
+                format!(
+                    "r {}  w {}",
+                    format::rate(disk.read_bytes_per_sec, scale),
+                    format::rate(disk.write_bytes_per_sec, scale)
+                ),
+                disk.used_percent,
+                cx,
+            ));
+        } else {
+            // `show_io_stat = False`: the bar still has to have a label,
+            // because `meter` derives its element id from that label and two
+            // bars sharing an id panic at window-build time.
+            row = row.child(meter(
+                format!("{} used", disk.mount_point),
+                disk.used_percent,
+                cx,
+            ));
+        }
+
+        body = body.child(row);
     }
 
     // Throughput for the first disk that has both rings.
@@ -427,6 +578,9 @@ pub fn disk_panel(
                 names: ("read", "write"),
                 unit: " B/s",
                 tick_secs,
+                // The disk graph has no auto-scale switch of its own.
+                auto_scale: true,
+                fixed_max: None,
             },
         )));
     }
@@ -498,6 +652,7 @@ pub fn proc_panel(
     selected: Option<i32>,
     controls: &ProcControls<'_>,
     scroll: &ScrollHandle,
+    opts: &PanelOpts,
     cx: &mut Context<AppView>,
 ) -> Div {
     let muted = cx.theme().muted_foreground;
@@ -513,7 +668,7 @@ pub fn proc_panel(
         // could not hand the mutable borrow back out once per row.
         let mut rows_view = v_flex().w_full().gap_0();
         for p in rows {
-            rows_view = rows_view.child(proc_row(p, scale, selected, cx));
+            rows_view = rows_view.child(proc_row(p, scale, selected, opts, cx));
         }
         rows_view.into_any_element()
     };
@@ -692,6 +847,7 @@ fn proc_row(
     p: &ProcSnapshot,
     scale: SizeScale,
     selected: Option<i32>,
+    opts: &PanelOpts,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let theme = cx.theme();
@@ -701,6 +857,19 @@ fn proc_row(
     // click listeners, so the theme borrow has to be over by then.
     let (muted, foreground, accent) = (theme.muted_foreground, theme.foreground, theme.accent);
     let (hover_bg, selected_bg) = (accent.opacity(0.10), accent.opacity(0.18));
+
+    // `proc_colors = False` drops the CPU and memory columns to plain text.
+    // These are `Copy` so the cell below captures no borrow of `cx`.
+    let hot = theme::stroke(cx, 0);
+    let warm = theme::stroke(cx, 1);
+    let colorize = opts.proc_colors;
+    let load_color = if p.cpu_percent >= 80.0 {
+        hot
+    } else if p.cpu_percent >= 30.0 {
+        warm
+    } else {
+        foreground
+    };
     // Half the theme radius: a full-radius pill on a dense table row reads as a
     // button rather than as the row it is.
     let radius = theme.radius / 2.;
@@ -766,7 +935,7 @@ fn proc_row(
             div()
                 .flex_none()
                 .text_xs()
-                .text_color(foreground)
+                .text_color(if colorize { load_color } else { muted })
                 .child(format::bytes(p.mem_bytes, scale)),
         )
         .child(
@@ -775,7 +944,71 @@ fn proc_row(
                 .w(px(56.))
                 .text_right()
                 .text_xs()
-                .text_color(foreground)
+                .text_color(if colorize { load_color } else { muted })
                 .child(format::percent(p.cpu_percent, 1)),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    #[test]
+    fn defaults_have_every_display_option_on() {
+        // The panel branches on these, so a default of `false` would silently
+        // hide a row rather than error.
+        let opts = PanelOpts::from_config(&Config::defaults());
+        assert!(opts.show_uptime);
+        assert!(opts.show_swap);
+        assert!(opts.show_cpu_watts);
+        assert!(opts.show_io_stat);
+        assert!(opts.mem_graphs);
+        assert!(opts.net_auto);
+        assert!(opts.proc_colors);
+        assert_eq!(opts.cpu_meter_style, CpuMeterStyle::Bar);
+        assert_eq!(opts.temp_scale, TempScale::Celsius);
+    }
+
+    #[test]
+    fn each_switch_is_readable_from_the_config() {
+        // Every one of these used to be declared and never read.
+        let cfg = Config::parse(
+            "show_uptime = False\n\
+             show_swap = False\n\
+             show_cpu_watts = False\n\
+             show_io_stat = False\n\
+             mem_graphs = False\n\
+             net_auto = False\n\
+             proc_colors = False\n",
+        );
+        let opts = PanelOpts::from_config(&cfg);
+        assert!(!opts.show_uptime);
+        assert!(!opts.show_swap);
+        assert!(!opts.show_cpu_watts);
+        assert!(!opts.show_io_stat);
+        assert!(!opts.mem_graphs);
+        assert!(!opts.net_auto);
+        assert!(!opts.proc_colors);
+    }
+
+    #[test]
+    fn the_meter_style_parses_both_spellings_and_falls_back_to_bar() {
+        assert_eq!(CpuMeterStyle::from_config("chip"), CpuMeterStyle::Chip);
+        assert_eq!(CpuMeterStyle::from_config("  CHIP "), CpuMeterStyle::Chip);
+        assert_eq!(CpuMeterStyle::from_config("bar"), CpuMeterStyle::Bar);
+        // An unrecognised value must not panic and must not hide the bars.
+        assert_eq!(CpuMeterStyle::from_config("wibble"), CpuMeterStyle::Bar);
+    }
+
+    #[test]
+    fn bitrate_ceilings_convert_and_never_collapse_to_zero() {
+        // Mibibits/s in, bytes/s out.
+        assert_eq!(mibits_to_bytes_per_sec(1), 1024.0 * 1024.0 / 8.0);
+        assert_eq!(mibits_to_bytes_per_sec(100), 100.0 * 1024.0 * 1024.0 / 8.0);
+        // A zero or negative ceiling would flatten the graph to a line, so it
+        // is floored rather than honoured.
+        assert!(mibits_to_bytes_per_sec(0) > 0.0);
+        assert!(mibits_to_bytes_per_sec(-5) > 0.0);
+    }
 }

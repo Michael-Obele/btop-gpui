@@ -44,6 +44,7 @@ use crate::config::Config;
 use crate::history::{History, clamp_columns};
 use crate::model::{ProcSnapshot, Snapshot};
 use crate::ui::chrome::{PRESETS, PanelBox, Preset, panel, panel_auto, status_bar};
+use crate::ui::panels::PanelOpts;
 use crate::ui::theme::{self, ThemeChoice};
 use crate::ui::{dialogs, panels};
 
@@ -81,6 +82,13 @@ pub struct AppView {
     preset: Preset,
     proc_sort: collect::proc::ProcSort,
     proc_reversed: bool,
+    /// The config-driven display options, refreshed by `apply_config`.
+    ///
+    /// Held here rather than read from the config inside `render()` so that a
+    /// panel cannot do file work on the UI thread.
+    opts: PanelOpts,
+    /// Which boxes `shown_boxes` permits, as a bitmask over `PanelBox::ALL`.
+    shown_mask: u8,
     proc_tree: bool,
     filter: collect::proc::CompiledFilter,
     /// The raw filter pattern as typed.
@@ -131,7 +139,11 @@ impl AppView {
             proc_tree: config.bool("proc_tree"),
             filter: collect::proc::compile_filter(&config.str("proc_filter")),
             preset: PRESETS[0],
-            proc_reversed: false,
+            // Was hardcoded `false`, so a `proc_reversed = True` in the config
+            // file was parsed, written back, and ignored.
+            proc_reversed: config.bool("proc_reversed"),
+            opts: PanelOpts::from_config(&config),
+            shown_mask: Preset::shown_mask(&config),
             selected_pid: None,
             dialog: Dialog::None,
             theme_choice: ThemeChoice::parse(&config.str("theme_mode")),
@@ -251,6 +263,16 @@ impl AppView {
         self.filter_text = cfg.str("proc_filter");
         self.net_iface = configured_iface(&cfg);
         self.tick_interval = cfg.update_interval();
+        // The sort *direction* was boot-only and never re-read, so toggling it
+        // in the dialog reversed the rows but a config reload lost it again.
+        self.proc_reversed = cfg.bool("proc_reversed");
+        // Every display option, read once here rather than per panel per frame.
+        // A panel that reached into the config itself would do file work in
+        // `render()`.
+        self.opts = panels::PanelOpts::from_config(&cfg);
+        // `shown_boxes` was a parsed-and-ignored key; the mask has to come from
+        // it so an edited config actually changes the layout.
+        self.shown_mask = Preset::shown_mask(&cfg);
         self.config = cfg.clone();
         self.shared.push_config(cfg);
     }
@@ -322,7 +344,7 @@ impl Render for AppView {
         if self.shows(PanelBox::Mem) {
             side = side.child(panel_auto(
                 PanelBox::Mem.title(),
-                panels::mem_panel(snap, &self.history, scale, tick_secs, cx),
+                panels::mem_panel(snap, &self.history, scale, tick_secs, &self.opts, cx),
                 cx,
             ));
         }
@@ -335,6 +357,7 @@ impl Render for AppView {
                     self.selected_net(),
                     scale,
                     tick_secs,
+                    &self.opts,
                     cx,
                 ),
                 cx,
@@ -343,7 +366,7 @@ impl Render for AppView {
         if self.shows(PanelBox::Disk) {
             side = side.child(panel_auto(
                 PanelBox::Disk.title(),
-                panels::disk_panel(snap, &self.history, scale, tick_secs, cx),
+                panels::disk_panel(snap, &self.history, scale, tick_secs, &self.opts, cx),
                 cx,
             ));
         }
@@ -352,7 +375,7 @@ impl Render for AppView {
         if self.shows(PanelBox::Cpu) {
             top = top.child(panel(
                 PanelBox::Cpu.title(),
-                panels::cpu_panel(snap, &self.history, tick_secs, cx),
+                panels::cpu_panel(snap, &self.history, tick_secs, &self.opts, cx),
                 cx,
             ));
         }
@@ -378,6 +401,7 @@ impl Render for AppView {
                     self.selected_pid,
                     &controls,
                     &self.proc_scroll,
+                    &self.opts,
                     cx,
                 ),
                 cx,
@@ -677,8 +701,7 @@ impl AppView {
                 return;
             }
             ("r", false) => {
-                self.proc_reversed = !self.proc_reversed;
-                cx.notify();
+                self.reverse_sort(cx);
                 return;
             }
             ("d", true) => {
@@ -852,8 +875,17 @@ impl AppView {
     }
 
     /// Flip the sort direction.
+    ///
+    /// Writes through to the config: pressing `r` used to change the rows but
+    /// leave `proc_reversed` at whatever the file said, so the setting and the
+    /// display disagreed.
     fn reverse_sort(&mut self, cx: &mut Context<Self>) {
         self.proc_reversed = !self.proc_reversed;
+        self.config.set(
+            "proc_reversed",
+            if self.proc_reversed { "True" } else { "False" },
+        );
+        self.persist_or_log();
         cx.notify();
     }
 
@@ -1113,7 +1145,9 @@ impl AppView {
     pub fn shows(&self, panel_box: PanelBox) -> bool {
         // The options dialog can also switch a box off independently of the
         // preset, so both have to agree for it to be drawn.
-        box_enabled(&self.config, panel_box) && self.preset.contains(panel_box)
+        box_enabled(&self.config, panel_box)
+            && self.preset.contains(panel_box)
+            && self.shown_mask & (1 << panel_box.index()) != 0
     }
 }
 

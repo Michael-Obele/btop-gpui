@@ -172,6 +172,12 @@ pub struct SeriesSpec {
     pub unit: &'static str,
     /// Seconds one sample covers, so the x axis can read `-8s` instead of `-4`.
     pub tick_secs: f32,
+    /// When `false`, `net_auto = False` is in force and the y domain comes from
+    /// `fixed_max` instead of following the data.
+    pub auto_scale: bool,
+    /// The ceiling to use when `auto_scale` is `false`, in the same unit as the
+    /// data. `None` falls back to auto-scaling rather than drawing a flat line.
+    pub fixed_max: Option<f32>,
 }
 
 /// Two series on one axis — network down and up, disk read and write.
@@ -196,6 +202,14 @@ pub fn dual_chart(
         .chain(second.iter())
         .map(|s| s.value)
         .fold(0.0f32, f32::max);
+
+    // `net_auto = False` pins the domain, so a quiet link reads as a flat line
+    // near the bottom instead of being magnified to fill the panel. A fixed max
+    // of zero would draw nothing, so that falls back to auto.
+    let domain_max = match (spec.auto_scale, spec.fixed_max) {
+        (false, Some(max)) if max > 0.0 => max,
+        _ => peak.max(1.0),
+    };
     AreaChart::new(first)
         .id(id)
         .x(|s: &Sample| s.label.clone())
@@ -212,7 +226,7 @@ pub fn dual_chart(
         .y_axis(true)
         .y_tick_count(3)
         .x_tick_count(X_TICKS)
-        .y_domain(0.0f32, peak.max(1.0))
+        .y_domain(0.0f32, domain_max)
         // The y scale here follows the data, so headroom would misreport the
         // peak; the top tick must be the actual maximum.
         .y_padding(0.0, 0.0)

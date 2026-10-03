@@ -35,12 +35,6 @@ pub const DESCRIPTIONS: &[(&str, OptType, &str, &str)] = &[
         "Theme name, or a file in the themes directory",
     ),
     (
-        "theme_background",
-        OptType::Bool,
-        "True",
-        "Paint the theme background",
-    ),
-    (
         "theme_mode",
         OptType::Str,
         "System",
@@ -53,108 +47,12 @@ pub const DESCRIPTIONS: &[(&str, OptType, &str, &str)] = &[
         "Milliseconds between updates (minimum 100)",
     ),
     (
-        "graph_symbol",
-        OptType::Str,
-        "braille",
-        "braille | block | tty",
-    ),
-    (
-        "graph_symbol_cpu",
-        OptType::Str,
-        "default",
-        "Override graph_symbol for the CPU box",
-    ),
-    (
-        "graph_symbol_mem",
-        OptType::Str,
-        "default",
-        "Override graph_symbol for the memory box",
-    ),
-    (
-        "graph_symbol_net",
-        OptType::Str,
-        "default",
-        "Override graph_symbol for the network box",
-    ),
-    (
-        "graph_symbol_proc",
-        OptType::Str,
-        "default",
-        "Override graph_symbol for the process box",
-    ),
-    (
-        "graph_symbol_disk",
-        OptType::Str,
-        "default",
-        "Override graph_symbol for the disk box",
-    ),
-    (
         "shown_boxes",
         OptType::Str,
         "cpu mem net proc",
-        "Which boxes exist: cpu mem net disks proc battery",
-    ),
-    (
-        "presets",
-        OptType::Str,
-        DEFAULT_PRESETS,
-        "Space separated box:position:graphsymbol groups",
-    ),
-    (
-        "disable_presets",
-        OptType::Str,
-        "Off",
-        "Off | Default | Custom | All",
-    ),
-    (
-        "vim_keys",
-        OptType::Bool,
-        "False",
-        "Use hjkl navigation keys",
-    ),
-    (
-        "rounded_corners",
-        OptType::Bool,
-        "True",
-        "Rounded panel corners",
-    ),
-    (
-        "clock_format",
-        OptType::Str,
-        "%X",
-        "strftime format for the clock",
+        "Which boxes exist: cpu mem disk net proc",
     ),
     ("show_uptime", OptType::Bool, "True", "Show uptime"),
-    (
-        "truecolor",
-        OptType::Bool,
-        "True",
-        "Accepted for compatibility; GPUI is always 32-bit colour",
-    ),
-    (
-        "force_tty",
-        OptType::Bool,
-        "False",
-        "Accepted and ignored: there is no TTY mode",
-    ),
-    (
-        "terminal_sync",
-        OptType::Bool,
-        "True",
-        "Accepted and ignored: terminal concept",
-    ),
-    (
-        "disable_mouse",
-        OptType::Bool,
-        "False",
-        "Ignore mouse input",
-    ),
-    (
-        "background_update",
-        OptType::Bool,
-        "True",
-        "Keep collecting while the window is unfocused",
-    ),
     (
         "custom_cpu_name",
         OptType::Str,
@@ -169,36 +67,6 @@ pub const DESCRIPTIONS: &[(&str, OptType, &str, &str)] = &[
     ),
     // ---- CPU ----
     (
-        "cpu_graph_upper",
-        OptType::Str,
-        "Auto",
-        "Auto | total | cpu-total | a field name",
-    ),
-    (
-        "cpu_graph_lower",
-        OptType::Str,
-        "Auto",
-        "Auto | total | cpu-total | cpuN",
-    ),
-    (
-        "cpu_invert_lower",
-        OptType::Bool,
-        "False",
-        "Invert the lower CPU graph",
-    ),
-    (
-        "cpu_single_graph",
-        OptType::Bool,
-        "False",
-        "Merge the two CPU graphs into one",
-    ),
-    (
-        "cpu_bottom",
-        OptType::Bool,
-        "False",
-        "Move the CPU box to the bottom",
-    ),
-    (
         "show_cpu_watts",
         OptType::Bool,
         "True",
@@ -206,22 +74,10 @@ pub const DESCRIPTIONS: &[(&str, OptType, &str, &str)] = &[
     ),
     ("check_temp", OptType::Bool, "True", "Read temperatures"),
     (
-        "cpu_sensor",
-        OptType::Str,
-        "Auto",
-        "Auto picks the first Package id / Tdie / SoC sensor",
-    ),
-    (
         "show_coretemp",
         OptType::Bool,
         "True",
         "Per-core temperatures",
-    ),
-    (
-        "cpu_core_map",
-        OptType::Str,
-        "",
-        "core:sensor overrides, e.g. \"0:1 1:2\"",
     ),
     (
         "temp_scale",
@@ -265,7 +121,7 @@ pub const DESCRIPTIONS: &[(&str, OptType, &str, &str)] = &[
         "mem_graphs",
         OptType::Bool,
         "True",
-        "Show the memory graphs",
+        "Show the memory usage graph",
     ),
     ("show_swap", OptType::Bool, "True", "Show swap"),
     (
@@ -312,30 +168,6 @@ pub const DESCRIPTIONS: &[(&str, OptType, &str, &str)] = &[
         "Show disk read/write rates and IO%",
     ),
     (
-        "io_mode",
-        OptType::Bool,
-        "False",
-        "False = combined r/w chart, True = separate",
-    ),
-    (
-        "io_graph_combined",
-        OptType::Bool,
-        "False",
-        "Draw one combined IO graph",
-    ),
-    (
-        "io_graph_speeds",
-        OptType::Str,
-        "",
-        "Fixed IO graph ceilings, e.g. \"disks:500\"",
-    ),
-    (
-        "disks_filter",
-        OptType::Str,
-        "",
-        "Include/exclude list, e.g. \"!sdb\"",
-    ),
-    (
         "base_10_sizes",
         OptType::Bool,
         "False",
@@ -367,18 +199,6 @@ pub const DESCRIPTIONS: &[(&str, OptType, &str, &str)] = &[
         "True",
         "Mirror the upload scale to the download scale",
     ),
-    (
-        "swap_upload_download",
-        OptType::Bool,
-        "False",
-        "Draw upload before download",
-    ),
-    (
-        "base_10_bitrate",
-        OptType::Str,
-        "Auto",
-        "Auto | True | False — decimal bitrates",
-    ),
     // ---- Processes ----
     (
         "proc_sorting",
@@ -400,40 +220,10 @@ pub const DESCRIPTIONS: &[(&str, OptType, &str, &str)] = &[
         "Colour the CPU and memory columns",
     ),
     (
-        "proc_gradient",
-        OptType::Bool,
-        "True",
-        "Use a gradient rather than a flat fill",
-    ),
-    (
         "proc_per_core",
         OptType::Bool,
         "True",
         "CPU% is relative to all cores, so it can exceed 100",
-    ),
-    (
-        "proc_mem_bytes",
-        OptType::Bool,
-        "True",
-        "Show memory in bytes rather than percent",
-    ),
-    (
-        "proc_cpu_graphs",
-        OptType::Bool,
-        "True",
-        "Per-row sparklines (expensive)",
-    ),
-    (
-        "proc_info_smaps",
-        OptType::Bool,
-        "False",
-        "Read smaps in the detail view (about 20x the CPU cost)",
-    ),
-    (
-        "proc_left",
-        OptType::Bool,
-        "False",
-        "Left-aligned process table",
     ),
     (
         "proc_filter_kernel",
@@ -441,101 +231,7 @@ pub const DESCRIPTIONS: &[(&str, OptType, &str, &str)] = &[
         "True",
         "Hide kernel threads",
     ),
-    (
-        "proc_follow_detailed",
-        OptType::Bool,
-        "False",
-        "Follow the process shown in the detail view",
-    ),
-    (
-        "proc_aggregate",
-        OptType::Bool,
-        "False",
-        "Sum child CPU into the parent row",
-    ),
-    (
-        "proc_tree_auto_collapse",
-        OptType::Int,
-        "0",
-        "Auto-collapse nodes with this many children; 0 disables",
-    ),
-    (
-        "keep_dead_proc_usage",
-        OptType::Bool,
-        "False",
-        "Keep the CPU% of dead processes",
-    ),
-    (
-        "show_proc_io",
-        OptType::Bool,
-        "True",
-        "Show /proc/<pid>/io in the detail view (btop-gpui addition)",
-    ),
-    // ---- GPU (v1 parses and ignores these) ----
-    (
-        "shown_gpus",
-        OptType::Str,
-        "nvidia amd intel apple",
-        "GPU vendors to look for",
-    ),
-    (
-        "nvml_measure_pcie_speeds",
-        OptType::Bool,
-        "True",
-        "Measure NVIDIA PCIe throughput",
-    ),
-    (
-        "rsmi_measure_pcie_speeds",
-        OptType::Bool,
-        "True",
-        "Measure ROCm PCIe throughput",
-    ),
-    (
-        "gpu_mirror_graph",
-        OptType::Bool,
-        "True",
-        "Mirror the download graph for upload",
-    ),
-    (
-        "custom_gpu_name0",
-        OptType::Str,
-        "",
-        "Override the name of GPU 0",
-    ),
-    (
-        "custom_gpu_name1",
-        OptType::Str,
-        "",
-        "Override the name of GPU 1",
-    ),
-    (
-        "custom_gpu_name2",
-        OptType::Str,
-        "",
-        "Override the name of GPU 2",
-    ),
-    (
-        "custom_gpu_name3",
-        OptType::Str,
-        "",
-        "Override the name of GPU 3",
-    ),
-    (
-        "custom_gpu_name4",
-        OptType::Str,
-        "",
-        "Override the name of GPU 4",
-    ),
-    (
-        "custom_gpu_name5",
-        OptType::Str,
-        "",
-        "Override the name of GPU 5",
-    ),
 ];
-
-pub const DEFAULT_PRESETS: &str =
-    "cpu:1:default,proc:0:default cpu:0:default,mem:0:default,net:0:default cpu:0:block,net:0:tty";
 
 /// Every option as a flat map. Flat (rather than a struct tree) so that
 /// saving is a straight iteration and unknown keys round-trip for free.
@@ -854,6 +550,78 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for (key, ..) in DESCRIPTIONS {
             assert!(seen.insert(*key), "duplicate key {key} in DESCRIPTIONS");
+        }
+    }
+
+    /// The guard for the class of bug this file used to be full of.
+    ///
+    /// `DESCRIPTIONS` held 89 keys; 63 of them were parsed, defaulted, written
+    /// back to the config file and then **never read**. A user setting
+    /// `show_cpu_watts = False` got a config file that agreed with them and a
+    /// panel that disagreed. Nothing failed, so nothing was noticed.
+    ///
+    /// This walks the crate's own source and requires every declared key to be
+    /// read somewhere. It is deliberately a source scan rather than a set of
+    /// hand-maintained names, so adding a key without wiring it fails here
+    /// rather than in a bug report.
+    ///
+    /// A key counts as wired if it reaches an accessor (`cfg.bool("x")` and
+    /// friends) or a named helper that reads it — `update_ms` goes through
+    /// `update_interval()` and `shown_boxes` through `Config::shows`, neither
+    /// of which passes the key literal at the call site.
+    #[test]
+    fn every_declared_key_is_actually_read() {
+        // Keys read through a helper, so the literal appears inside a method
+        // body rather than at a call site. Listing them explicitly is the price
+        // of not reimplementing a Rust parser in a test.
+        const VIA_HELPER: &[&str] = &[
+            "update_ms",     // Config::update_interval
+            "log_level",     // Config::log_level
+            "shown_boxes",   // Config::shown_boxes / Config::shows
+            "base_10_sizes", // Config::size_scale
+        ];
+
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut others = String::new();
+        collect_rust_excluding(&src, "config.rs", &mut others);
+
+        let unwired: Vec<&str> = DESCRIPTIONS
+            .iter()
+            .map(|(key, ..)| *key)
+            .filter(|key| {
+                if VIA_HELPER.contains(key) {
+                    return false;
+                }
+                // `others` excludes this file, so the table's own mention of the
+                // key is not in there. One hit means a real read somewhere.
+                let needle = format!("\"{key}\"");
+                !others.contains(&needle)
+            })
+            .collect();
+
+        assert!(
+            unwired.is_empty(),
+            "these config keys are declared but never read, so setting them does \
+             nothing. Wire them or delete them from DESCRIPTIONS: {unwired:?}"
+        );
+    }
+
+    /// Recursively append every `.rs` file under `dir` to `out`, skipping any file
+    /// whose name is `skip`.
+    fn collect_rust_excluding(dir: &std::path::Path, skip: &str, out: &mut String) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rust_excluding(&path, skip, out);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && path.file_name().is_some_and(|n| n != skip)
+                && let Ok(text) = std::fs::read_to_string(&path)
+            {
+                out.push_str(&text);
+            }
         }
     }
 }
