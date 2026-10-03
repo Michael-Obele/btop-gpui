@@ -34,9 +34,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme, Icon, TitleBar, h_flex, v_flex, window_border};
 use gpui_kit::prelude::*;
-use gpui_kit::{
-    Context, Div, ElementId, FocusHandle, Render, ScrollHandle, SharedString, Window, div,
-};
+use gpui_kit::{Context, Div, ElementId, FocusHandle, Render, SharedString, Window, div};
 
 use crate::collect::proc::ProcSort;
 use crate::collect::{self, Shared};
@@ -75,7 +73,7 @@ pub struct AppView {
     /// clone it: it owns a `Vec` of every process on the machine.
     snapshot: Option<Arc<Snapshot>>,
     /// The visible process rows, ordered and filtered. Rebuilt once per tick.
-    proc_rows: Vec<ProcSnapshot>,
+    pub(crate) proc_rows: Vec<ProcSnapshot>,
     history: History,
 
     // ---- UI state ----
@@ -86,7 +84,7 @@ pub struct AppView {
     ///
     /// Held here rather than read from the config inside `render()` so that a
     /// panel cannot do file work on the UI thread.
-    opts: PanelOpts,
+    pub(crate) opts: PanelOpts,
     /// Which boxes `shown_boxes` permits, as a bitmask over `PanelBox::ALL`.
     shown_mask: u8,
     proc_tree: bool,
@@ -105,7 +103,7 @@ pub struct AppView {
     /// incremental search, so every printable key has to reach it — including
     /// `q`, which would otherwise quit the app mid-word.
     filter_editing: bool,
-    selected_pid: Option<i32>,
+    pub(crate) selected_pid: Option<i32>,
     dialog: Dialog,
     /// The theme the user asked for. Kept as the *choice* rather than the
     /// resolved mode, so `System` keeps following the desktop instead of
@@ -117,7 +115,20 @@ pub struct AppView {
     net_iface: Option<String>,
     /// Scroll position of the process list. Owned here because the list has to
     /// stay clipped and scrollable, not grow to its content height.
-    proc_scroll: ScrollHandle,
+    /// Per-row sizes for the virtualized process list.
+    ///
+    /// Rebuilt only when the row count changes (see `proc_panel`), because
+    /// `v_virtual_list` requires every height up front. A process list is
+    /// uniform, so this is one `Size` per row and nothing more.
+    proc_row_sizes: std::cell::RefCell<Vec<gpui_kit::Size<gpui_kit::Pixels>>>,
+    /// Scroll handle for the virtualized list.
+    ///
+    /// `VirtualList` wants its own handle type rather than a bare
+    /// `ScrollHandle`, so this replaced the old `proc_scroll`.
+    pub(crate) proc_virtual_scroll: gpui_kit::component::VirtualListScrollHandle,
+    /// The size scale the rows render with, cached for the virtual list's
+    /// renderer (which only gets the view, not the panel's arguments).
+    pub(crate) proc_size_scale: crate::format::SizeScale,
     /// How long between collector ticks. Held as state rather than captured when
     /// the loop starts, so changing it in the options dialog takes effect on the
     /// next tick instead of needing a new loop.
@@ -151,7 +162,9 @@ impl AppView {
             filter_text: config.str("proc_filter"),
             filter_before_edit: String::new(),
             filter_editing: false,
-            proc_scroll: ScrollHandle::new(),
+            proc_row_sizes: std::cell::RefCell::new(Vec::new()),
+            proc_virtual_scroll: gpui_kit::component::VirtualListScrollHandle::new(),
+            proc_size_scale: config.size_scale(),
             tick_interval: Duration::from_secs(2),
             cols: 120,
             last_seen: 0,
@@ -270,6 +283,7 @@ impl AppView {
         // A panel that reached into the config itself would do file work in
         // `render()`.
         self.opts = panels::PanelOpts::from_config(&cfg);
+        self.proc_size_scale = cfg.size_scale();
         // `shown_boxes` was a parsed-and-ignored key; the mask has to come from
         // it so an edited config actually changes the layout.
         self.shown_mask = Preset::shown_mask(&cfg);
@@ -298,6 +312,23 @@ impl AppView {
     /// The rows of the process list, or an empty slice before the first tick.
     pub fn proc_rows(&self) -> &[ProcSnapshot] {
         &self.proc_rows
+    }
+
+    /// The per-row sizes `v_virtual_list` needs, rebuilt only when the row
+    /// count changes.
+    ///
+    /// Returns a fresh `Rc` pointing at the cached vector. On an unchanged
+    /// count this is one refcount bump and no allocation, which is what keeps
+    /// the list off the per-frame allocation path.
+    pub fn proc_row_sizes_for(
+        &self,
+        count: usize,
+    ) -> std::rc::Rc<Vec<gpui_kit::Size<gpui_kit::Pixels>>> {
+        let mut cache = self.proc_row_sizes.borrow_mut();
+        if cache.len() != count {
+            *cache = panels::uniform_row_sizes(count).as_ref().clone();
+        }
+        std::rc::Rc::new(cache.clone())
     }
 
     pub fn selected_pid(&self) -> Option<i32> {
@@ -390,20 +421,12 @@ impl Render for AppView {
             let controls = panels::ProcControls {
                 sort: self.proc_sort,
                 reversed: self.proc_reversed,
-                filter: &self.filter_text,
+                filter: self.filter_text.clone(),
                 editing: self.filter_editing,
             };
             lower = lower.child(panel(
                 PanelBox::Proc.title(),
-                panels::proc_panel(
-                    &self.proc_rows,
-                    scale,
-                    self.selected_pid,
-                    &controls,
-                    &self.proc_scroll,
-                    &self.opts,
-                    cx,
-                ),
+                panels::proc_panel(&controls, cx),
                 cx,
             ));
         }

@@ -6,9 +6,7 @@
 
 use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::{
-    App, Context, Div, ElementId, IntoElement, MouseButton, ScrollHandle, SharedString, div, px,
-};
+use gpui_kit::{App, Context, Div, ElementId, IntoElement, MouseButton, SharedString, div, px};
 
 use crate::app::AppView;
 use crate::collect::proc::ProcSort;
@@ -628,17 +626,43 @@ pub fn battery_panel(snapshot: Option<&Snapshot>, cx: &App) -> Div {
 /// Grouped rather than passed one by one — the panel already takes rows, a scale,
 /// a selection, a scroll handle and a context, and clippy's seven-argument limit
 /// is a fair line.
-pub struct ProcControls<'a> {
+pub struct ProcControls {
     pub sort: ProcSort,
     /// `false` is descending, which is verified behaviour rather than a guess.
     pub reversed: bool,
-    pub filter: &'a str,
+    /// Owned rather than `&'a str` because the panel takes a `&mut Context`,
+    /// which cannot coexist with a borrow of the view it came from. One short
+    /// `String` per frame is cheaper than restructuring the borrow.
+    pub filter: String,
     /// True while the filter box has the keyboard.
     pub editing: bool,
 }
 
-/// The process list: a filter line, a clickable sort bar, then a clipped,
-/// scrollable list of interactive rows.
+/// Height of one process row, in pixels.
+///
+/// Fixed, and the reason virtualization is possible at all: `VirtualList` needs
+/// every row's height *before* it renders anything, so a row whose height
+/// depends on its contents cannot be virtualized. The row therefore sets this
+/// height explicitly and truncates rather than wrapping.
+pub const PROC_ROW_HEIGHT: f32 = 22.;
+
+/// One uniform `Size` per row, for `v_virtual_list`.
+///
+/// Split out so the shape can be tested without a window: the whole
+/// virtualization contract is "there is exactly one size per row, and they are
+/// all the row height".
+pub fn uniform_row_sizes(count: usize) -> std::rc::Rc<Vec<gpui_kit::Size<gpui_kit::Pixels>>> {
+    std::rc::Rc::new(vec![
+        gpui_kit::size(
+            gpui_kit::px(0.),
+            gpui_kit::px(PROC_ROW_HEIGHT)
+        );
+        count
+    ])
+}
+
+/// The process list: a filter line, a clickable sort bar, then a virtualized
+/// list of interactive rows.
 ///
 /// Sorting and filtering already happened in `pull()`; this renders that order
 /// verbatim. This is the one panel that takes a `&mut Context<AppView>` rather
@@ -646,46 +670,63 @@ pub struct ProcControls<'a> {
 /// handler below is a single call into an `AppView` method that the keyboard
 /// also uses, so the pointer path — which cannot be exercised on this machine —
 /// holds no logic of its own.
-pub fn proc_panel(
-    rows: &[ProcSnapshot],
-    scale: SizeScale,
-    selected: Option<i32>,
-    controls: &ProcControls<'_>,
-    scroll: &ScrollHandle,
-    opts: &PanelOpts,
-    cx: &mut Context<AppView>,
-) -> Div {
+pub fn proc_panel(controls: &ProcControls, cx: &mut Context<AppView>) -> Div {
     let muted = cx.theme().muted_foreground;
 
-    let list = if rows.is_empty() {
-        div()
-            .text_sm()
-            .text_color(muted)
-            .child("no processes match")
-            .into_any_element()
-    } else {
-        // A `for` loop rather than `.map()`: a closure would capture `cx` and
-        // could not hand the mutable borrow back out once per row.
-        let mut rows_view = v_flex().w_full().gap_0();
-        for p in rows {
-            rows_view = rows_view.child(proc_row(p, scale, selected, opts, cx));
-        }
-        rows_view.into_any_element()
+    let body = panel_body()
+        .child(filter_line(controls, cx))
+        .child(proc_sort_bar(controls, cx));
+
+    // `read` needs an `&App`, which a `&mut Context` cannot lend; `read_with`
+    // takes the context itself.
+    let (sizes, virtual_scroll) = {
+        let entity = cx.entity();
+        entity.read_with(cx, |view, _app| {
+            (
+                view.proc_row_sizes_for(view.proc_rows.len()),
+                view.proc_virtual_scroll.clone(),
+            )
+        })
     };
 
-    panel_body()
-        .child(filter_line(controls, cx))
-        .child(proc_sort_bar(controls, cx))
-        .child(
-            div()
-                .id("proc-scroll")
-                .flex_1()
-                .min_h_0()
-                .w_full()
-                .overflow_y_scroll()
-                .track_scroll(scroll)
-                .child(list),
+    if sizes.is_empty() {
+        return body
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(muted)
+                    .child("no processes match"),
+            )
+            .flex_1();
+    }
+
+    body.child(
+        gpui_kit::component::v_virtual_list(
+            cx.entity().clone(),
+            "proc-scroll",
+            sizes,
+            move |view, range, _window, cx| {
+                // Only the visible range is built. At 2000 processes that is
+                // roughly 30 rows instead of 2000 stateful elements, each with
+                // a hover style and an ElementId.
+                let scale = view.proc_size_scale;
+                let selected_pid = view.selected_pid;
+                let opts = view.opts;
+                range
+                    .map(|ix| {
+                        let Some(p) = view.proc_rows.get(ix) else {
+                            return div().into_any_element();
+                        };
+                        proc_row(p, scale, selected_pid, &opts, cx).into_any_element()
+                    })
+                    .collect()
+            },
         )
+        .track_scroll(&virtual_scroll)
+        .flex_1()
+        .min_h_0()
+        .w_full(),
+    )
 }
 
 /// The sort bar above the process list.
@@ -699,7 +740,7 @@ pub fn proc_panel(
 /// Hidden when empty so it costs no vertical space in the common case, and
 /// visible while editing so the caret has somewhere to live — a filter you
 /// cannot see is a filter you cannot trust.
-fn filter_line(controls: &ProcControls<'_>, cx: &App) -> impl IntoElement {
+fn filter_line(controls: &ProcControls, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let (muted, foreground, border) = (theme.muted_foreground, theme.foreground, theme.border);
     let shown = controls.editing || !controls.filter.is_empty();
@@ -734,7 +775,7 @@ fn filter_line(controls: &ProcControls<'_>, cx: &App) -> impl IntoElement {
         })
 }
 
-fn proc_sort_bar(controls: &ProcControls<'_>, cx: &mut Context<AppView>) -> impl IntoElement {
+fn proc_sort_bar(controls: &ProcControls, cx: &mut Context<AppView>) -> impl IntoElement {
     let theme = cx.theme();
     let (sort, reversed) = (controls.sort, controls.reversed);
     h_flex()
@@ -878,6 +919,9 @@ fn proc_row(
         .id(ElementId::Name(SharedString::from(format!(
             "proc-row-{pid}"
         ))))
+        // A fixed height is what makes the row virtualizable: `VirtualList` is
+        // told every row's height up front, before any of them exist.
+        .h(px(PROC_ROW_HEIGHT))
         .px_1()
         .gap_2()
         .items_center()
@@ -1010,5 +1054,39 @@ mod tests {
         // is floored rather than honoured.
         assert!(mibits_to_bytes_per_sec(0) > 0.0);
         assert!(mibits_to_bytes_per_sec(-5) > 0.0);
+    }
+}
+
+#[cfg(test)]
+mod virtualization_tests {
+    use super::*;
+
+    #[test]
+    fn there_is_exactly_one_size_per_row() {
+        // `VirtualList` indexes `item_sizes` by row index. A short list would
+        // panic on the first row past the end; a long one wastes a slot per
+        // phantom row.
+        for count in [0usize, 1, 7, 2000] {
+            assert_eq!(uniform_row_sizes(count).len(), count, "count {count}");
+        }
+    }
+
+    #[test]
+    fn every_row_has_the_same_height() {
+        // The list is uniform, so a varying height would mean the offsets
+        // `VirtualList` computes are wrong for every row after the first.
+        let sizes = uniform_row_sizes(50);
+        let first = sizes[0].height;
+        assert!(first > gpui_kit::px(0.0));
+        for size in sizes.iter() {
+            assert_eq!(size.height, first);
+        }
+    }
+
+    #[test]
+    fn an_empty_list_is_usable() {
+        // The panel checks this to render "no processes match" rather than
+        // handing `VirtualList` a zero-length range.
+        assert!(uniform_row_sizes(0).is_empty());
     }
 }
